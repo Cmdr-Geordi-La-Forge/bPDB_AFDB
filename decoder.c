@@ -1,10 +1,12 @@
 #include "bpdb.h"
 #include "pdb_utils.h"
 #include "utils.h"
+#include "afdb_strings.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#include <stdbool.h>
 
 #if defined(__SSE4_1__)
     #include "sse.h"
@@ -16,13 +18,6 @@
 
 extern const ResidueDict DICT[];
 extern const size_t NUM_DICT_RES;
-
-static const char* ATOM37_ORDER[37] = {
-    "N", "CA", "C", "CB", "O", "CG", "CG1", "CG2", "OG", "OG1", "SG", "CD",
-    "CD1", "CD2", "ND1", "ND2", "OD1", "OD2", "SD", "CE", "CE1", "CE2", "CE3",
-    "NE", "NE1", "NE2", "OE1", "OE2", "CH2", "NH1", "NH2", "OH", "CZ", "CZ2",
-    "CZ3", "NZ", "OXT"
-};
 
 // --- 1. Coordinate Formatters ---
 static void trim_string(const char* src, char* dst, int max_len) {
@@ -42,39 +37,7 @@ static void format_coord(char* buf, int32_t val, int decimals) {
     }
 }
 
-// --- 2. Meta Deserialization ---
-extern void write_meta_struct_conf(FILE* out_f, const MetaStructConf* confs, size_t count);
-
-static const uint8_t* deserialize_meta_section(const uint8_t* ptr, FILE* out_f) {
-    uint64_t bitmask;
-    memcpy(&bitmask, ptr, 8); 
-    ptr += 8;
-
-    MetaStructConf* decoded_confs = NULL;
-    size_t decoded_conf_count = 0;
-    
-    if (bitmask & (1ULL << 40)) { 
-        uint64_t struct_len;
-        memcpy(&struct_len, ptr, 8); 
-        ptr += 8;
-        
-        decoded_conf_count = (size_t)struct_len;
-        size_t payload_bytes = decoded_conf_count * sizeof(MetaStructConf);
-        
-        decoded_confs = malloc(payload_bytes);
-        memcpy(decoded_confs, ptr, payload_bytes);
-        ptr += payload_bytes;
-    }
-
-    if (decoded_conf_count > 0 && decoded_confs != NULL) {
-        write_meta_struct_conf(out_f, decoded_confs, decoded_conf_count);
-        free(decoded_confs);
-    }
-    
-    return ptr;
-}
-
-// --- 3. Atom Loop Helpers ---
+// --- 2. Atom Loop Helpers ---
 static void print_atom_site_header(FILE* out_f) {
     fprintf(out_f, "loop_\n"
                    "_atom_site.group_PDB\n_atom_site.id\n_atom_site.type_symbol\n"
@@ -153,28 +116,44 @@ static void decode_atom_coordinates(const uint8_t* chain_hdr, FILE* out_f, const
     }
 }
 
-// --- 4. Main Decoder Pipeline ---
+// --- 3. Main Decoder Pipeline ---
 void decode_binary_to_afdb(const uint8_t* buf, size_t buf_len, FILE* out_f) {
     if (buf_len < 80) return; 
 
-    // 1. Global Header parsing
     char accession[13] = {0};
     memcpy(accession, buf + 8, 12); 
     
     uint16_t cur_mod;
     memcpy(&cur_mod, buf + 22, 2);
-    int frag_num = cur_mod + 1; // Reconstruct original fragment number
+    int frag_num = cur_mod + 1;
 
     const uint8_t* ptr = buf + 64; 
 
-    // 2. Deserialize Meta-Bitmask
     uint64_t bitmask;
     memcpy(&bitmask, ptr, 8); 
     ptr += 8;
-    uint8_t elements_mask[16] = {0};
-    if (bitmask & FLAG_ELEMENTS) {
-        memcpy(elements_mask, ptr, 16);
-        ptr += 16;
+
+    float global_plddt = 0.0f;
+    if (bitmask & FLAG_RESOLUTION) {
+        memcpy(&global_plddt, ptr, 4);
+        ptr += 4;
+    }
+
+    char* description = NULL;
+    if (bitmask & FLAG_ENTITY) {
+        uint32_t dlen;
+        memcpy(&dlen, ptr, 4); 
+        ptr += 4;
+        if (dlen > 0) {
+            description = malloc(dlen + 1);
+            memcpy(description, ptr, dlen);
+            description[dlen] = '\0';
+            ptr += dlen;
+        }
+    }
+    if (!description) {
+        description = malloc(8);
+        memcpy(description, "Unknown", 8);
     }
 
     MetaStructConf* decoded_confs = NULL;
@@ -190,29 +169,194 @@ void decode_binary_to_afdb(const uint8_t* buf, size_t buf_len, FILE* out_f) {
         ptr += payload_bytes;
     }
 
-    // 3. Write AlphaFold Headers and Elements 
+    MetaTemplate* decoded_temps = NULL;
+    size_t decoded_temp_count = 0;
+    if (bitmask & FLAG_TEMPLATES) {
+        uint64_t t_len;
+        memcpy(&t_len, ptr, 8);
+        ptr += 8;
+        decoded_temp_count = (size_t)t_len;
+        size_t t_bytes = decoded_temp_count * sizeof(MetaTemplate);
+        decoded_temps = malloc(t_bytes);
+        memcpy(decoded_temps, ptr, t_bytes);
+        ptr += t_bytes;
+    }
+
     if ((bitmask & FLAG_AFDB) && (bitmask & FLAG_CIF)) {
-        // Reconstruct the full AFDB ID using the extracted UniProt ID and fragment number
         fprintf(out_f, "data_AF-%s-F%d\n#\n_entry.id AF-%s-F%d\n#\n", accession, frag_num, accession, frag_num);
         
-        if (bitmask & FLAG_ELEMENTS) {
-            fprintf(out_f, "loop_\n_atom_type.symbol\nC \nN \nO \n");
-            if (elements_mask[1] & (1 << 7)) { // Check Bit 15 of mask (Sulfur)
-                fprintf(out_f, "S \n");
+        uint32_t total_res;
+        char chain_id;
+        const uint8_t* seq = NULL;
+        int first_seq_id = 1;
+        {
+            memcpy(&total_res, ptr, 4);
+            chain_id = ptr[4];
+            
+            int16_t resSeqShifted;
+            memcpy(&resSeqShifted, ptr + 6, 2);
+            first_seq_id = resSeqShifted >> 1;
+            
+            seq = ptr + 16;
+        }
+        
+        bool present[26] = {false};
+        for(uint32_t i = 0; i < total_res; i++) {
+            uint8_t c = seq[i];
+            if(c >= 'A' && c <= 'Z') present[c - 'A'] = true;
+        }
+
+        fprintf(out_f, "loop_\n_atom_type.symbol\nC \nN \nO \n");
+        if (present['C' - 'A'] || present['M' - 'A']) {
+            fprintf(out_f, "S \n");
+        }
+        fprintf(out_f, "#\n");
+
+        fprintf(out_f, "%s", AFDB_AUDIT_BLOCK);
+        
+        fprintf(out_f, "loop_\n_chem_comp.formula\n_chem_comp.formula_weight\n_chem_comp.id\n_chem_comp.mon_nstd_flag\n_chem_comp.name\n_chem_comp.pdbx_synonyms\n_chem_comp.type\n");
+        for (size_t k = 0; k < NUM_CHEM_COMP_ROWS; k++) {
+            if (present[CHEM_COMP_ROWS[k].code - 'A']) {
+                fprintf(out_f, "%s\n", CHEM_COMP_ROWS[k].str);
+            }
+        }
+        fprintf(out_f, "#\n");
+
+        fprintf(out_f, "%s", AFDB_CITATION_BLOCK);
+
+        fprintf(out_f, "_database_2.database_code AF-%s-F%d\n", accession, frag_num);
+        fprintf(out_f, "_database_2.database_id   AlphaFoldDB\n#\n");
+
+        fprintf(out_f, "_entity.details                  ?\n");
+        fprintf(out_f, "_entity.formula_weight           ?\n");
+        fprintf(out_f, "_entity.id                       1\n");
+        fprintf(out_f, "_entity.pdbx_description         \"%s\"\n", description);
+        fprintf(out_f, "_entity.pdbx_ec                  ?\n");
+        fprintf(out_f, "_entity.pdbx_fragment            ?\n");
+        fprintf(out_f, "_entity.pdbx_mutation            ?\n");
+        fprintf(out_f, "_entity.pdbx_number_of_molecules 1\n");
+        fprintf(out_f, "_entity.src_method               man\n");
+        fprintf(out_f, "_entity.type                     polymer\n#\n");
+        
+        fprintf(out_f, "_entity_poly.entity_id                    1\n");
+        fprintf(out_f, "_entity_poly.nstd_linkage                 no\n");
+        fprintf(out_f, "_entity_poly.nstd_monomer                 no\n");
+
+        if (total_res <= 80) {
+            fprintf(out_f, "_entity_poly.pdbx_seq_one_letter_code     %.*s\n", total_res, seq);
+            fprintf(out_f, "_entity_poly.pdbx_seq_one_letter_code_can %.*s\n", total_res, seq);
+        } else {
+            fprintf(out_f, "_entity_poly.pdbx_seq_one_letter_code     \n;");
+            for (uint32_t i = 0; i < total_res; i++) {
+                fputc(seq[i], out_f);
+                if ((i + 1) % 80 == 0 && i != total_res - 1) fputc('\n', out_f);
+            }
+            fprintf(out_f, "\n;\n_entity_poly.pdbx_seq_one_letter_code_can \n;");
+            for (uint32_t i = 0; i < total_res; i++) {
+                fputc(seq[i], out_f);
+                if ((i + 1) % 80 == 0 && i != total_res - 1) fputc('\n', out_f);
+            }
+            fprintf(out_f, "\n;\n");
+        }
+        
+        fprintf(out_f, "_entity_poly.pdbx_strand_id               %c\n", chain_id);
+        fprintf(out_f, "_entity_poly.type                         polypeptide(L)\n#\n");
+        
+        // --- 1. _entity_poly_seq block ---
+        fprintf(out_f, "loop_\n_entity_poly_seq.entity_id\n_entity_poly_seq.hetero\n_entity_poly_seq.mon_id\n_entity_poly_seq.num\n");
+        int num_width = snprintf(NULL, 0, "%u", total_res);
+        for (uint32_t i = 0; i < total_res; i++) {
+            char res3[4] = "UNK";
+            for (size_t d = 0; d < NUM_DICT_RES; d++) {
+                if (DICT[d].oneLetter == seq[i]) { trim_string(DICT[d].name, res3, 4); break; }
+            }
+            fprintf(out_f, "1 n %-3s %-*d \n", res3, num_width, i + 1);
+        }
+        fprintf(out_f, "#\n");
+
+        // --- 2. Dynamic _ma_data & Static Models ---
+        if (decoded_temp_count > 0) {
+            fprintf(out_f, "loop_\n_ma_data.content_type\n_ma_data.id\n_ma_data.name\n");
+            fprintf(out_f, "\"model coordinates\" 1 Model             \n");
+            fprintf(out_f, "\"input structure\"   2 \"Input structure\" \n#\n");
+        } else {
+            fprintf(out_f, "_ma_data.content_type \"model coordinates\"\n");
+            fprintf(out_f, "_ma_data.id           1\n");
+            fprintf(out_f, "_ma_data.name         Model\n#\n");
+        }
+        
+        fprintf(out_f, "%s", AFDB_MA_MODEL_LIST);
+
+        // --- 3. _ma_template_ref_db_details ---
+        if (decoded_temp_count > 0) {
+            fprintf(out_f, "loop_\n"
+                           "_ma_template_ref_db_details.db_accession_code\n"
+                           "_ma_template_ref_db_details.db_name\n"
+                           "_ma_template_ref_db_details.template_id\n");
+            for (size_t i = 0; i < decoded_temp_count; i++) {
+                fprintf(out_f, "%s %s %u \n", decoded_temps[i].accession, decoded_temps[i].db_name, decoded_temps[i].template_id);
             }
             fprintf(out_f, "#\n");
         }
 
-        // Print the statically defined audit/author block cleanly
-        fprintf(out_f, "%s", AFDB_STATIC_META_STRING);
-    }
+        // --- 4. _ma_qa_metric_global ---
+        if (bitmask & FLAG_RESOLUTION) {
+            fprintf(out_f, "_ma_qa_metric_global.metric_id    1\n");
+            fprintf(out_f, "_ma_qa_metric_global.metric_value %.2f\n", global_plddt);
+            fprintf(out_f, "_ma_qa_metric_global.model_id     1\n");
+            fprintf(out_f, "_ma_qa_metric_global.ordinal_id   1\n#\n");
+        }
 
-    // 4. Write Secondary Structure
+        // --- 5. _ma_qa_metric_local ---
+        fprintf(out_f, "loop_\n"
+                       "_ma_qa_metric_local.label_asym_id\n"
+                       "_ma_qa_metric_local.label_comp_id\n"
+                       "_ma_qa_metric_local.label_seq_id\n"
+                       "_ma_qa_metric_local.metric_id\n"
+                       "_ma_qa_metric_local.metric_value\n"
+                       "_ma_qa_metric_local.model_id\n"
+                       "_ma_qa_metric_local.ordinal_id\n");
+                       
+        const int16_t* c_stream = (const int16_t*)(ptr + 16 + total_res + ((16 - (total_res % 16)) % 16));
+        simd_vec_t simd_acc_copy = simd_init();
+        
+        for (uint32_t i = 0; i < total_res; i++) {
+            uint8_t code = seq[i];
+            int dict_idx = -1;
+            for (size_t d = 0; d < NUM_DICT_RES; d++) {
+                if (DICT[d].oneLetter == code) { dict_idx = d; break; }
+            }
+            if (dict_idx == -1) continue;
+
+            char res3[4] = "UNK";
+            trim_string(DICT[dict_idx].name, res3, 4);
+            int num_atoms = (i == total_res - 1) ? DICT[dict_idx].numHeavyAtomsTerm : DICT[dict_idx].numHeavyAtoms;
+            int seq_id = first_seq_id + i;
+            
+            int32_t b = 0;
+            for (int a = 0; a < num_atoms; a++) {
+                int32_t tb, tx, ty, tz;
+                simd_decode_step(&simd_acc_copy, &c_stream, &tb, &tx, &ty, &tz);
+                if (a == 0) { b = tb; }
+            }
+            
+            char sb[16];
+            format_coord(sb, b, 2);
+            fprintf(out_f, "%c %-3s %-*d 2 %-5s 1 %-*d \n", chain_id, res3, num_width, seq_id, sb, num_width, i + 1);
+        }
+        fprintf(out_f, "#\n");
+
+        // --- 6. Static Target Entity Instance ---
+        fprintf(out_f, "%s", AFDB_MA_POST_BLOCK);
+    }
+    
+    if (decoded_temps) free(decoded_temps);
+    free(description);
+
     if (decoded_conf_count > 0 && decoded_confs != NULL) {
         write_meta_struct_conf(out_f, decoded_confs, decoded_conf_count);
         free(decoded_confs);
     }
 
-    // 5. Decode Coordinates
     decode_atom_coordinates(ptr, out_f, accession);
 }

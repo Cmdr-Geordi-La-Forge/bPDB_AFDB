@@ -19,8 +19,10 @@
 #define FLAG_AFDB       (1ULL << 1)
 #define FLAG_HYDROGENS  (1ULL << 2)
 #define FLAG_CIF        (1ULL << 3)
-#define FLAG_ELEMENTS   (1ULL << 34) // Placed in Section 3 (> Bit 16)
+#define FLAG_RESOLUTION (1ULL << 20)
+#define FLAG_ENTITY     (1ULL << 34)
 #define FLAG_STRUCT     (1ULL << 40)
+#define FLAG_TEMPLATES  (1ULL << 41)
 
 typedef struct {
     uint8_t resType;
@@ -36,6 +38,12 @@ typedef struct {
     uint8_t type_id;
     uint8_t parent_id;
 } MetaStructConf;
+
+typedef struct {
+    char accession[12];
+    char db_name[8];
+    uint32_t template_id;
+} MetaTemplate;
 
 typedef struct {
     uint8_t code;

@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>
 
 #define MAX_LOOP_HEADERS 64
 #define IDX_ATOM_ID   1
@@ -63,32 +64,82 @@ static void parse_global_ids(const char* cif_data, const char* end, char* access
     }
 }
 
-static int parse_cif_sequence(const char* cif_data, const char* end, ParsedResidue** out_residues) {
-    int res_count = 0;
-    const char* align_end_ptr = find_token(cif_data, end, "_struct_ref.pdbx_align_end");
-    if (align_end_ptr) {
-        align_end_ptr += 26;
-        while (align_end_ptr < end && *align_end_ptr == ' ') align_end_ptr++;
-        res_count = parse_number(align_end_ptr, 10);
+static void parse_entity_desc(const char* cif_data, const char* end, char** out_desc) {
+    const char* ptr = find_token(cif_data, end, "_entity.pdbx_description");
+    if (!ptr) {
+        *out_desc = NULL;
+        return;
+    }
+    ptr += strlen("_entity.pdbx_description");
+    while (ptr < end && (*ptr == ' ' || *ptr == '\t')) ptr++;
+    
+    char quote = 0;
+    if (*ptr == '"' || *ptr == '\'') {
+        quote = *ptr++;
     }
     
-    if (res_count <= 0) return 0;
-
-    ParsedResidue* residues = calloc(res_count, sizeof(ParsedResidue));
-    const char* seq_ptr = find_token(cif_data, end, "_struct_ref.pdbx_seq_one_letter_code");
+    const char* start = ptr;
+    while (ptr < end) {
+        if (quote) {
+            if (*ptr == quote) break;
+        } else {
+            if (*ptr == ' ' || *ptr == '\n' || *ptr == '\r') break;
+        }
+        ptr++;
+    }
     
-    if (seq_ptr) {
-        seq_ptr = memchr(seq_ptr, ';', end - seq_ptr);
-        if (seq_ptr) {
-            seq_ptr++; 
-            int seq_idx = 0;
-            while (seq_ptr < end && *seq_ptr != ';') {
-                if (*seq_ptr >= 'A' && *seq_ptr <= 'Z') {
-                    if (seq_idx < res_count) residues[seq_idx].code = *seq_ptr;
-                    seq_idx++;
-                }
-                seq_ptr++;
+    int len = ptr - start;
+    if (len > 0) {
+        *out_desc = malloc(len + 1);
+        memcpy(*out_desc, start, len);
+        (*out_desc)[len] = '\0';
+    } else {
+        *out_desc = NULL;
+    }
+}
+
+static int parse_entity_seq(const char* cif_data, const char* end, ParsedResidue** out_residues) {
+    const char* seq_ptr = find_token(cif_data, end, "_entity_poly.pdbx_seq_one_letter_code");
+    if (!seq_ptr) return 0;
+    
+    seq_ptr += strlen("_entity_poly.pdbx_seq_one_letter_code");
+    while (seq_ptr < end && (*seq_ptr == ' ' || *seq_ptr == '\t')) seq_ptr++;
+    
+    bool is_semi = false;
+    if (seq_ptr < end && *seq_ptr == '\n') {
+        seq_ptr++;
+        if (seq_ptr < end && *seq_ptr == ';') {
+            is_semi = true;
+            seq_ptr++;
+        }
+    } else if (seq_ptr < end && *seq_ptr == ';') {
+        is_semi = true;
+        seq_ptr++;
+    }
+
+    int capacity = 1024;
+    int res_count = 0;
+    ParsedResidue* residues = calloc(capacity, sizeof(ParsedResidue));
+    
+    while (seq_ptr < end) {
+        if (is_semi) {
+            if (*seq_ptr == ';' && *(seq_ptr - 1) == '\n') break; 
+        } else {
+            if (*seq_ptr == ' ' || *seq_ptr == '\n' || *seq_ptr == '\r') break;
+        }
+        
+        char c = *seq_ptr++;
+        if (c >= 'A' && c <= 'Z') {
+            if (c == 'U') c = 'C';
+            if (c == 'O') c = 'X';
+            
+            if (res_count >= capacity) {
+                capacity *= 2;
+                residues = realloc(residues, capacity * sizeof(ParsedResidue));
+                memset(residues + res_count, 0, (capacity - res_count) * sizeof(ParsedResidue));
             }
+            residues[res_count].code = c;
+            res_count++;
         }
     }
     *out_residues = residues;
@@ -207,14 +258,56 @@ static size_t serialize_coordinates(ParsedResidue* residues, int res_count, int1
     return (size_t)((uint8_t*)stream - (uint8_t*)start_stream);
 }
 
-// Metadata loop parser (unchanged interior logic, just moved to separate file earlier but keeping prototype clean)
+// --- Template Parser Helper ---
+static size_t parse_meta_templates(const char* cif_data, const char* end, MetaTemplate** out_temps) {
+    const char* ptr = find_token(cif_data, end, "_ma_template_ref_db_details.template_id");
+    if (!ptr) return 0;
+    
+    while (ptr < end && *ptr != '\n') ptr++;
+    if (ptr < end) ptr++;
+    
+    size_t cap = 4, count = 0;
+    MetaTemplate* temps = malloc(cap * sizeof(MetaTemplate));
+    
+    while (ptr < end && *ptr != '#' && *ptr != '_' && strncmp(ptr, "loop_", 5) != 0) {
+        if (*ptr == ' ' || *ptr == '\n' || *ptr == '\r') { ptr++; continue; }
+        
+        if (count >= cap) { cap *= 2; temps = realloc(temps, cap * sizeof(MetaTemplate)); }
+        memset(&temps[count], 0, sizeof(MetaTemplate));
+        
+        const char* start = ptr;
+        while (ptr < end && *ptr != ' ') ptr++;
+        int len = ptr - start;
+        if (len > 11) len = 11;
+        memcpy(temps[count].accession, start, len);
+        
+        while (ptr < end && *ptr == ' ') ptr++;
+        
+        start = ptr;
+        while (ptr < end && *ptr != ' ') ptr++;
+        len = ptr - start;
+        if (len > 7) len = 7;
+        memcpy(temps[count].db_name, start, len);
+        
+        while (ptr < end && *ptr == ' ') ptr++;
+        
+        start = ptr;
+        while (ptr < end && *ptr != ' ' && *ptr != '\n' && *ptr != '\r') ptr++;
+        temps[count].template_id = parse_number(start, ptr - start);
+        
+        count++;
+        while (ptr < end && *ptr != '\n') ptr++;
+    }
+    *out_temps = temps;
+    return count;
+}
+
 extern size_t parse_meta_struct_conf(const char* cif_data, const char* end, MetaStructConf** out_confs);
 
 // --- 3. Main Encoder Pipeline ---
 size_t encode_afdb_to_binary(const char* cif_data, size_t cif_len, uint8_t** out_buf) {
     const char* end = cif_data + cif_len;
     
-    // Preset bitmask for AFDB files (AF_MODE | AFDB | CIF) -> 0b1011
     uint64_t bitmask = FLAG_AF_MODE | FLAG_AFDB | FLAG_CIF;
     size_t meta_size = 8; 
 
@@ -223,32 +316,34 @@ size_t encode_afdb_to_binary(const char* cif_data, size_t cif_len, uint8_t** out
     int frag_num = 1;
     parse_global_ids(cif_data, end, accession, &frag_num);
 
+    char* desc = NULL;
+    parse_entity_desc(cif_data, end, &desc);
+
     ParsedResidue* residues = NULL;
-    int res_count = parse_cif_sequence(cif_data, end, &residues);
+    int res_count = parse_entity_seq(cif_data, end, &residues);
     if (res_count <= 0) {
+        if (desc) free(desc);
         *out_buf = NULL; return 0;
     }
 
-    // 2. Elements Bitmask Generation (Mapped to Bit 34)
-    uint8_t elements_mask[16] = {0};
-    // Bits 5, 6, 7 -> C, N, O
-    elements_mask[0] = (1 << 5) | (1 << 6) | (1 << 7);
-    
-    for (int i = 0; i < res_count; i++) {
-        if (residues[i].code == 'C' || residues[i].code == 'M') {
-            elements_mask[1] |= (1 << 7); // Bit 15 -> S
-            break; 
-        }
-    }
-    bitmask |= FLAG_ELEMENTS;
-    meta_size += 16; 
+    // 2. Entity Desc Bitmask
+    bitmask |= FLAG_ENTITY;
+    size_t desc_len = desc ? strlen(desc) : 0;
+    meta_size += 4 + desc_len; 
 
-    // 3. Meta Extraction (Mapped to Bit 40)
+    // 3. Meta Extraction (Struct Confs & Templates)
     MetaStructConf* struct_confs = NULL;
     size_t struct_conf_count = parse_meta_struct_conf(cif_data, end, &struct_confs);
     if (struct_conf_count > 0) {
         bitmask |= FLAG_STRUCT; 
         meta_size += 8 + (struct_conf_count * sizeof(MetaStructConf)); 
+    }
+
+    MetaTemplate* struct_temps = NULL;
+    size_t struct_temp_count = parse_meta_templates(cif_data, end, &struct_temps);
+    if (struct_temp_count > 0) {
+        bitmask |= FLAG_TEMPLATES;
+        meta_size += 8 + (struct_temp_count * sizeof(MetaTemplate));
     }
 
     // 4. Atom Extraction
@@ -273,33 +368,36 @@ size_t encode_afdb_to_binary(const char* cif_data, size_t cif_len, uint8_t** out
     *out_buf = calloc(1, max_out_size);
     uint8_t* out = *out_buf;
 
-    // 6. Write Global Header (Exactly 64 bytes)
+    // 6. Write Global Header
     memset(out, 0, 64);
     memcpy(out, "bPDB", 4); 
-    out[4] = 0x00; // Format Version
-    out[5] = 1;    // Deposition Day (Dummy for AFDB)
-    out[6] = 1;    // Deposition Month (Dummy for AFDB)
-    out[7] = 0;    // Deposition Year (YYYY - 1973)
+    out[4] = 0x00; 
+    out[5] = 1;    
+    out[6] = 1;    
+    out[7] = 0;    
     
-    memcpy(out + 8, accession, 12); // Null-padded pdbID/UniProt ID
+    memcpy(out + 8, accession, 12); 
     
-    uint16_t tot_mod = 0; // AFDB standard fraction count default
+    uint16_t tot_mod = 0; 
     uint16_t cur_mod = (frag_num > 0) ? (frag_num - 1) : 0;
     
     memcpy(out + 20, &tot_mod, 2);
     memcpy(out + 22, &cur_mod, 2);
-    // bytes 24-63 (classification string) remain 0x00 padded for AFDB
     
     out += 64;
 
-    // 7. Write Meta Payloads (Strict bit order: 34 then 40)
+    // 7. Write Meta Payloads
     memcpy(out, &bitmask, 8); 
     out += 8;
 
-    if (bitmask & FLAG_ELEMENTS) {
-        memcpy(out, elements_mask, 16);
-        out += 16;
+    if (bitmask & FLAG_ENTITY) {
+        uint32_t dlen = desc_len;
+        memcpy(out, &dlen, 4); out += 4;
+        if (dlen > 0) {
+            memcpy(out, desc, dlen); out += dlen;
+        }
     }
+    if (desc) free(desc);
 
     if (bitmask & FLAG_STRUCT) {
         uint64_t struct_len = struct_conf_count;
@@ -310,6 +408,16 @@ size_t encode_afdb_to_binary(const char* cif_data, size_t cif_len, uint8_t** out
         out += payload_bytes;
     }
     if (struct_confs) free(struct_confs);
+
+    if (bitmask & FLAG_TEMPLATES) {
+        uint64_t t_len = struct_temp_count;
+        memcpy(out, &t_len, 8); 
+        out += 8;
+        size_t t_bytes = struct_temp_count * sizeof(MetaTemplate);
+        memcpy(out, struct_temps, t_bytes);
+        out += t_bytes;
+    }
+    if (struct_temps) free(struct_temps);
 
     // 8. Write Chain Header
     uint32_t tot_res = res_count;
@@ -323,7 +431,7 @@ size_t encode_afdb_to_binary(const char* cif_data, size_t cif_len, uint8_t** out
     for (int i = 0; i < res_count; i++) *out++ = residues[i].code;
     for (int i = 0; i < pad; i++) *out++ = 0x00;
 
-    // 9. Serialize and return actual size
+    // 9. Serialize and return
     size_t stream_size = serialize_coordinates(residues, res_count, (int16_t*)out);
     
     free(residues);
