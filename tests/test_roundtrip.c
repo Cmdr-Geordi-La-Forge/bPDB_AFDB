@@ -2,8 +2,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-int main(void) {
-    const char* filename = "AF-A0A011QK89-F1.cif";
+int main(int argc, char** argv) {
+    const char* filename = (argc > 1) ? argv[1] : "tests/fixtures/AF-A0A011QK89-F1.cif";
     FILE* f = fopen(filename, "rb");
     if (!f) {
         fprintf(stderr, "Error: Could not open '%s' for testing.\n", filename);
@@ -13,22 +13,29 @@ int main(void) {
     fseek(f, 0, SEEK_END);
     long fsize = ftell(f);
     fseek(f, 0, SEEK_SET);
+    if (fsize < 0) {
+        fclose(f);
+        return 1;
+    }
 
-    char* cif_data = malloc(fsize + 1);
+    char* cif_data = malloc((size_t)fsize + 1);
     if (!cif_data) {
         fclose(f);
         return 1;
     }
-    
-    if (fread(cif_data, 1, fsize, f) != (size_t)fsize) {
+
+    if (fread(cif_data, 1, (size_t)fsize, f) != (size_t)fsize) {
         fprintf(stderr, "Error: Failed to read file data.\n");
-        free(cif_data); fclose(f); return 1;
+        free(cif_data);
+        fclose(f);
+        return 1;
     }
     fclose(f);
     cif_data[fsize] = '\0';
 
     uint8_t* out_buf = NULL;
-    size_t bin_size = encode_afdb_to_binary(cif_data, fsize, &out_buf);
+    size_t bin_size = encode_afdb_to_binary(cif_data, (size_t)fsize, &out_buf);
+    int status = 1;
 
     if (bin_size > 0 && out_buf) {
         printf("Success: Encoded %ld byte mmCIF to %zu byte binary stream.\n", fsize, bin_size);
@@ -37,12 +44,13 @@ int main(void) {
             fwrite(out_buf, 1, bin_size, out);
             fclose(out);
             printf("Saved encoded binary to 'output.bpdb'\n");
-            
+
             FILE* dec_out = fopen("decoded_AF-A0A011QK89-F1.cif", "w");
             if (dec_out) {
                 decode_binary_to_afdb(out_buf, bin_size, dec_out);
                 fclose(dec_out);
                 printf("Successfully decoded back to 'decoded_AF-A0A011QK89-F1.cif'\n");
+                status = 0;
             }
         }
     } else {
@@ -51,5 +59,5 @@ int main(void) {
 
     free(cif_data);
     free(out_buf);
-    return 0;
+    return status;
 }
