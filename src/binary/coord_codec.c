@@ -49,14 +49,8 @@ static inline void pack_pair_12(uint8_t* dst, const int32_t d0[3], const int32_t
     uint64_t a1 = ((uint64_t)(d1[0] & 0xFFF)) |
                   ((uint64_t)(d1[1] & 0xFFF) << 12) |
                   ((uint64_t)(d1[2] & 0xFFF) << 24);
-    dst[0] = (uint8_t)(a0);
-    dst[1] = (uint8_t)(a0 >> 8);
-    dst[2] = (uint8_t)(a0 >> 16);
-    dst[3] = (uint8_t)(a0 >> 24);
-    dst[4] = (uint8_t)((a0 >> 32) | ((a1 & 0x0F) << 4));
-    dst[5] = (uint8_t)(a1 >> 4);
-    dst[6] = (uint8_t)(a1 >> 12);
-    dst[7] = (uint8_t)(a1 >> 20);
+    uint64_t lo = a0 | ((a1 & 0x0FFFFFFFULL) << 36);
+    memcpy(dst, &lo, 8);
     dst[8] = (uint8_t)(a1 >> 28);
 }
 
@@ -104,20 +98,19 @@ static inline void unpack_pair_12_neon(const uint8_t* p, int32x4_t* out0, int32x
 }
 #endif
 
-static bool push_neg_zero(AfdbMetadata* meta, uint32_t* cap, uint32_t entry) {
-    if (meta->neg_zero_count >= *cap) {
-        uint32_t ncap = (*cap == 0) ? 8U : (*cap * 2U);
+static bool push_neg_zero(AfdbMetadata* meta, uint32_t entry) {
+    if (meta->neg_zero_count >= meta->neg_zero_cap) {
+        uint32_t ncap = (meta->neg_zero_cap == 0) ? 8U : (meta->neg_zero_cap * 2U);
         uint32_t* nr = realloc(meta->neg_zeros, (size_t)ncap * sizeof(uint32_t));
         if (!nr) return false;
         meta->neg_zeros = nr;
-        *cap = ncap;
+        meta->neg_zero_cap = ncap;
     }
     meta->neg_zeros[meta->neg_zero_count++] = entry;
     return true;
 }
 
 bool coord_prepare_v2(const ParsedChain* chain, AfdbMetadata* meta, HotPrep* out) {
-    memset(out, 0, sizeof(*out));
     if (!chain || chain->res_count <= 0) return false;
 
     uint32_t n_res = (uint32_t)chain->res_count;
@@ -125,7 +118,7 @@ bool coord_prepare_v2(const ParsedChain* chain, AfdbMetadata* meta, HotPrep* out
     const ResidueDict*   last_rd  = dict_find_aa(last_res->code);
     if (!last_rd) return false;
 
-    uint8_t c_term_oxt = last_res->present[last_rd->numHeavyAtoms] ? 1 : 0;
+    uint8_t c_term_oxt = (last_res->present_mask & (1U << last_rd->numHeavyAtoms)) ? 1 : 0;
 
     uint32_t total_atoms = 0;
     for (uint32_t r = 0; r < n_res; r++) {
@@ -135,54 +128,70 @@ bool coord_prepare_v2(const ParsedChain* chain, AfdbMetadata* meta, HotPrep* out
     }
     if (total_atoms == 0) return false;
 
-    out->total_res   = n_res;
-    out->total_atoms = total_atoms;
-    out->c_term_oxt  = c_term_oxt;
-    out->plddt       = calloc(n_res, sizeof(uint16_t));
-    out->packed_len  = coord_padded_size(total_atoms);
-    out->packed_coords = out->packed_len ? calloc(out->packed_len, 1) : NULL;
-    if (!out->plddt || (out->packed_len && !out->packed_coords)) return false;
+    size_t packed_len = coord_padded_size(total_atoms);
 
-    uint32_t n_deltas = total_atoms - 1U;
-    int32_t (*deltas)[3] = n_deltas ? calloc((size_t)n_deltas + 1U, sizeof(*deltas)) : NULL;
-    if (n_deltas && !deltas) return false;
+    if (out->plddt_cap < n_res) {
+        uint16_t* np = realloc(out->plddt, (size_t)n_res * sizeof(uint16_t));
+        if (!np) return false;
+        out->plddt = np;
+        out->plddt_cap = n_res;
+    }
+    if (packed_len > out->packed_cap) {
+        uint8_t* nc = realloc(out->packed_coords, packed_len);
+        if (!nc) return false;
+        out->packed_coords = nc;
+        out->packed_cap = packed_len;
+    }
 
-    uint32_t esc_cap = 0, nz_cap = 0;
+    out->total_res       = n_res;
+    out->total_atoms     = total_atoms;
+    out->c_term_oxt      = c_term_oxt;
+    out->packed_len      = packed_len;
+    out->escape_count    = 0;
+    meta->neg_zero_count = 0;
+
     int32_t  prev_c[3] = {0, 0, 0};
+    int32_t  pair_d[2][3];
+    uint32_t parity   = 0;
     uint32_t atom_idx = 0;
+    uint8_t* dst      = out->packed_coords;
 
     for (uint32_t r = 0; r < n_res; r++) {
         const ParsedResidue* res = &chain->residues[r];
         const ResidueDict*   rd  = dict_find_aa(res->code);
         int num_atoms = (r == n_res - 1 && c_term_oxt) ? rd->numHeavyAtomsTerm : rd->numHeavyAtoms;
+        uint32_t pmask = res->present_mask;
 
-        int32_t res_b = res->present[0] ? res->coords[0][0] : 0;
-        if (res_b < 0) res_b = 0;
-        if (res_b > 65535) res_b = 65535;
-        out->plddt[r] = (uint16_t)res_b;
+        out->plddt[r] = res->plddt;
 
-        int32_t cur_xyz[30][3];
+        int32_t cur_xyz[25][3];
         for (int a = 0; a < num_atoms; a++) {
-            int32_t x = res->present[a] ? res->coords[a][1] : 0;
-            int32_t y = res->present[a] ? res->coords[a][2] : 0;
-            int32_t z = res->present[a] ? res->coords[a][3] : 0;
+            int32_t x, y, z;
+            uint8_t lsb;
+            if (__builtin_expect((pmask & (1U << a)) != 0, 1)) {
+                x   = res->xyz[a][0];
+                y   = res->xyz[a][1];
+                z   = res->xyz[a][2];
+                lsb = res->xyz_lsb[a];
+            } else {
+                x = y = z = 0;
+                lsb = 0;
+            }
             cur_xyz[a][0] = x;
             cur_xyz[a][1] = y;
             cur_xyz[a][2] = z;
 
-            uint8_t lsb = res->present[a] ? res->xyz_lsb[a] : 0;
-            if (lsb) {
+            if (__builtin_expect(lsb != 0, 0)) {
                 for (uint32_t axis = 0; axis < 3; axis++) {
                     if (lsb & (1U << axis)) {
-                        if (!push_neg_zero(meta, &nz_cap, (atom_idx << 2) | (axis + 1U))) {
-                            free(deltas);
+                        if (!push_neg_zero(meta, (atom_idx << 2) | (axis + 1U))) {
                             return false;
                         }
                     }
                 }
             }
 
-            if (atom_idx == 0) {
+            if (__builtin_expect(atom_idx == 0, 0)) {
                 out->origin[0] = x;
                 out->origin[1] = y;
                 out->origin[2] = z;
@@ -192,24 +201,34 @@ bool coord_prepare_v2(const ParsedChain* chain, AfdbMetadata* meta, HotPrep* out
                 int32_t dx = x - pxyz[0];
                 int32_t dy = y - pxyz[1];
                 int32_t dz = z - pxyz[2];
-                uint32_t di = atom_idx - 1U;
 
-                if (dx < -2047 || dx > 2047 || dy < -2047 || dy > 2047 || dz < -2047 || dz > 2047) {
-                    deltas[di][0] = -2048;
-                    deltas[di][1] = 0;
-                    deltas[di][2] = 0;
-                    if (out->escape_count >= esc_cap) {
-                        uint32_t ncap = (esc_cap == 0) ? 4U : (esc_cap * 2U);
+                if (__builtin_expect(
+                        (uint32_t)(dx + 2047) > 4094U ||
+                        (uint32_t)(dy + 2047) > 4094U ||
+                        (uint32_t)(dz + 2047) > 4094U, 0)) {
+                    pair_d[parity][0] = -2048;
+                    pair_d[parity][1] = 0;
+                    pair_d[parity][2] = 0;
+                    if (out->escape_count >= out->esc_cap) {
+                        uint32_t ncap = (out->esc_cap == 0) ? 4U : (out->esc_cap * 2U);
                         EscapeAtom* ne = realloc(out->escapes, (size_t)ncap * sizeof(EscapeAtom));
-                        if (!ne) { free(deltas); return false; }
+                        if (!ne) return false;
                         out->escapes = ne;
-                        esc_cap = ncap;
+                        out->esc_cap = ncap;
                     }
                     out->escapes[out->escape_count++] = (EscapeAtom){ x, y, z };
                 } else {
-                    deltas[di][0] = dx;
-                    deltas[di][1] = dy;
-                    deltas[di][2] = dz;
+                    pair_d[parity][0] = dx;
+                    pair_d[parity][1] = dy;
+                    pair_d[parity][2] = dz;
+                }
+
+                if (parity == 1) {
+                    pack_pair_12(dst, pair_d[0], pair_d[1]);
+                    dst += 9;
+                    parity = 0;
+                } else {
+                    parity = 1;
                 }
             }
             atom_idx++;
@@ -219,11 +238,19 @@ bool coord_prepare_v2(const ParsedChain* chain, AfdbMetadata* meta, HotPrep* out
         prev_c[2] = cur_xyz[2][2];
     }
 
-    size_t n_pairs = ((size_t)n_deltas + 1U) / 2U;
-    for (size_t i = 0; i < n_pairs; i++) {
-        pack_pair_12(out->packed_coords + i * 9U, deltas[i * 2U], deltas[i * 2U + 1U]);
+    if (parity == 1) {
+        pair_d[1][0] = 0;
+        pair_d[1][1] = 0;
+        pair_d[1][2] = 0;
+        pack_pair_12(dst, pair_d[0], pair_d[1]);
+        dst += 9;
     }
-    free(deltas);
+    if (packed_len > 0) {
+        size_t written = (size_t)(dst - out->packed_coords);
+        if (written < packed_len) {
+            memset(dst, 0, packed_len - written);
+        }
+    }
 
     if (meta->neg_zero_count > 0) {
         meta->flags |= FLAG_NEG_ZERO;

@@ -56,11 +56,52 @@ const char* const ATOM37_ORDER[37] = {
 };
 
 // Direct O(1) index into the amino acid prefix of DICT[] ('A'..'Z', 'J' unused)
-static const int8_t AA_DICT_INDEX[26] = {
+const int8_t AA_DICT_INDEX[26] = {
      0,  1,  2,  3,  4,  5,  6,  7,  8, -1,
      9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
     19, 20, 21, 22, 23, 24
 };
+
+// O(1) L1-resident open-addressed hash table per amino acid (25 * 64 slots = 8 KB)
+static uint32_t AA_ATOM_KEYS[25][64];
+static int8_t   AA_ATOM_VALS[25][64];
+
+static inline uint32_t pack_atom_col(const char* s, int width) {
+    uint32_t key = 0;
+    int shift = 0;
+    for (int i = 0; i < width; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if (c == '\0') break;
+        if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+            if (key) break;
+            continue;
+        }
+        if (shift < 32) {
+            key |= ((uint32_t)c << shift);
+            shift += 8;
+        }
+    }
+    return key;
+}
+
+__attribute__((constructor))
+static void dict_init_atom_lut(void) {
+    for (int aa = 0; aa < 25; aa++) {
+        const ResidueDict* rd = &DICT[aa];
+        for (int a = 0; a < rd->numHeavyAtomsTerm; a++) {
+            uint32_t key = pack_atom_col(rd->atomNames[a], 4);
+            uint32_t h   = (key * 0x9E3779B1U) >> 26;
+            while (AA_ATOM_KEYS[aa][h] != 0) h = (h + 1U) & 63U;
+            AA_ATOM_KEYS[aa][h] = key;
+            AA_ATOM_VALS[aa][h] = (int8_t)a;
+        }
+    }
+}
+
+int dict_aa_index(uint8_t one_letter) {
+    if (one_letter < 'A' || one_letter > 'Z') return -1;
+    return AA_DICT_INDEX[one_letter - 'A'];
+}
 
 const ResidueDict* dict_find_aa(uint8_t one_letter) {
     if (one_letter < 'A' || one_letter > 'Z') return NULL;
@@ -68,19 +109,27 @@ const ResidueDict* dict_find_aa(uint8_t one_letter) {
     return (idx >= 0) ? &DICT[idx] : NULL;
 }
 
-int dict_get_atom_idx(uint8_t one_letter, const char* atom_name, bool is_terminal) {
-    const ResidueDict* rd = dict_find_aa(one_letter);
-    if (!rd) return -1;
+int dict_get_atom_idx_fast(int aa_idx, const char* atom_col, int width, bool is_terminal) {
+    if (aa_idx < 0) return -1;
+    uint32_t key = pack_atom_col(atom_col, width);
+    if (key == 0) return -1;
 
-    int limit = is_terminal ? rd->numHeavyAtomsTerm : rd->numHeavyAtoms;
-    for (int a = 0; a < limit; a++) {
-        char d_clean[5];
-        strip_whitespace_fixed(rd->atomNames[a], 4, d_clean, 4);
-        if (strcmp(atom_name, d_clean) == 0) {
-            return a;
+    uint32_t h = (key * 0x9E3779B1U) >> 26;
+    for (;;) {
+        uint32_t k = AA_ATOM_KEYS[aa_idx][h];
+        if (k == key) {
+            int idx   = AA_ATOM_VALS[aa_idx][h];
+            int limit = is_terminal ? DICT[aa_idx].numHeavyAtomsTerm : DICT[aa_idx].numHeavyAtoms;
+            return (idx < limit) ? idx : -1;
         }
+        if (k == 0) return -1;
+        h = (h + 1U) & 63U;
     }
-    return -1;
+}
+
+int dict_get_atom_idx(uint8_t one_letter, const char* atom_name, bool is_terminal) {
+    int aa_idx = dict_aa_index(one_letter);
+    return dict_get_atom_idx_fast(aa_idx, atom_name, 4, is_terminal);
 }
 
 uint8_t res3_to_type_id(const char* src, int width) {

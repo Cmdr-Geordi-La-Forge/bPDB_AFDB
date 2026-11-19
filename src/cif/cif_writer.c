@@ -181,7 +181,9 @@ static void write_qa_metric_blocks(FILE* out_f, const AfdbMetadata* meta, const 
     fprintf(out_f, "%s", AFDB_MA_MODEL_LIST);
 
     if (meta->flags & FLAG_RESOLUTION) {
-        fprintf(out_f, AFDB_QA_METRIC_GLOBAL_FORMAT, meta->global_plddt);
+        char gbuf[16];
+        format_fixed_decimal(gbuf, (int32_t)meta->global_plddt, 2);
+        fprintf(out_f, AFDB_QA_METRIC_GLOBAL_FORMAT, gbuf);
     }
 
     fprintf(out_f, "%s", AFDB_QA_METRIC_LOCAL_HEADER);
@@ -267,10 +269,10 @@ static void write_template_blocks(FILE* out_f, const AfdbMetadata* meta, char ch
         const char* acc  = (t->accession && t->accession[0]) ? t->accession : "?";
         const char* db   = (t->db_name && t->db_name[0]) ? t->db_name : "?";
 
-        int la = (int)strlen(auth);                   if (la > w_auth) w_auth = la;
-        int lt = snprintf(NULL, 0, "%u", t->template_id); if (lt > w_tid) w_tid = lt;
-        int lc = (int)strlen(acc);                    if (lc > w_acc)  w_acc  = lc;
-        int ld = (int)strlen(db);                     if (ld > w_db)   w_db   = ld;
+        int la = (int)strlen(auth);                       if (la > w_auth) w_auth = la;
+        int lt = snprintf(NULL, 0, "%u", t->template_id); if (lt > w_tid)  w_tid  = lt;
+        int lc = (int)strlen(acc);                        if (lc > w_acc)  w_acc  = lc;
+        int ld = (int)strlen(db);                         if (ld > w_db)   w_db   = ld;
     }
 
     fprintf(out_f, "%s", AFDB_MA_TEMPLATE_DETAILS_HEADER);
@@ -305,6 +307,70 @@ static void format_cif_quoted(const char* src, size_t len, char* dst, size_t dst
 }
 
 static void write_audit_revision_blocks(FILE* out_f, const AfdbMetadata* meta) {
+    if (!(meta->flags & FLAG_AUDIT)) return;
+
+    // Fast pre-formatted v6 cohort blocks
+    if (meta->audit_mask == (AUDIT_MASK_V2 | AUDIT_MASK_V3 | AUDIT_MASK_V4 | AUDIT_MASK_V5 | AUDIT_MASK_V6)) {
+        fputs(AFDB_AUDIT_V6_SWISSPROT_BLOCK, out_f);
+        return;
+    }
+    if (meta->audit_mask == (AUDIT_MASK_V3 | AUDIT_MASK_V4 | AUDIT_MASK_V5 | AUDIT_MASK_V6)) {
+        fputs(AFDB_AUDIT_V6_TREMBL_BLOCK, out_f);
+        return;
+    }
+    if (meta->audit_mask == (AUDIT_MASK_V1 | AUDIT_MASK_V2 | AUDIT_MASK_V3 | AUDIT_MASK_V4 | AUDIT_MASK_V5 | AUDIT_MASK_V6)) {
+        fputs(AFDB_AUDIT_V6_MODELORG_BLOCK, out_f);
+        return;
+    }
+
+    // Generic AFDB preset subset bitmask
+    if (meta->audit_mask != 0 && meta->audit_mask != AUDIT_MASK_RAW) {
+        const AfdbAuditPreset* rows[6];
+        size_t n = 0;
+        int w_desc = 1, w_type = 1, w_maj = 1, w_min = 1;
+
+        for (size_t i = 0; i < NUM_AFDB_AUDIT_PRESETS; i++) {
+            if (!(meta->audit_mask & (1U << i))) continue;
+            const AfdbAuditPreset* p = &AFDB_AUDIT_PRESETS[i];
+            rows[n++] = p;
+
+            size_t dlen = strlen(p->description);
+            size_t tlen = strlen(p->type);
+            int l_desc = (dlen == 0) ? 1 : (int)dlen + (cif_needs_quoting(p->description) ? 2 : 0);
+            int l_type = (tlen == 0) ? 1 : (int)tlen + (cif_needs_quoting(p->type) ? 2 : 0);
+            int l_maj  = snprintf(NULL, 0, "%u", p->major);
+            int l_min  = snprintf(NULL, 0, "%u", p->minor);
+
+            if (l_desc > w_desc) w_desc = l_desc;
+            if (l_type > w_type) w_type = l_type;
+            if (l_maj  > w_maj)  w_maj  = l_maj;
+            if (l_min  > w_min)  w_min  = l_min;
+        }
+        if (n == 0) return;
+
+        fprintf(out_f, "%s", AFDB_AUDIT_REVISION_DETAILS_HEADER);
+        for (size_t i = 0; i < n; i++) {
+            const AfdbAuditPreset* p = rows[i];
+            char q_desc[256], q_type[64];
+            format_cif_quoted(p->description, strlen(p->description), q_desc, sizeof(q_desc));
+            format_cif_quoted(p->type, strlen(p->type), q_type, sizeof(q_type));
+
+            fprintf(out_f, "\"Structure model\" %-*s %-*u repository %-*u %-*s \n",
+                    w_desc, q_desc, w_maj, p->major, w_maj, p->major, w_type, q_type);
+        }
+        fprintf(out_f, "#\n");
+
+        fprintf(out_f, "%s", AFDB_AUDIT_REVISION_HISTORY_HEADER);
+        for (size_t i = 0; i < n; i++) {
+            const AfdbAuditPreset* p = rows[i];
+            fprintf(out_f, "\"Structure model\" %-*u %-*u %-*u %s \n",
+                    w_maj, p->major, w_min, p->minor, w_maj, p->major, p->date_str);
+        }
+        fprintf(out_f, "#\n");
+        return;
+    }
+
+    // Raw inline revisions fallback (AUDIT_MASK_RAW)
     if (meta->revision_count == 0) return;
 
     int w_desc = 1, w_type = 1, w_maj = 1, w_min = 1;
@@ -493,7 +559,14 @@ void cif_write_afdb_metadata(FILE* out_f, const AfdbMetadata* meta, const ChainV
     fprintf(out_f, "%s", AFDB_PDBX_DATA_USAGE);
 
     char last_date[16] = "2021-07-01";
-    if (meta->revision_count > 0) {
+    if (meta->audit_mask != 0 && meta->audit_mask != AUDIT_MASK_RAW) {
+        for (int i = (int)NUM_AFDB_AUDIT_PRESETS - 1; i >= 0; i--) {
+            if (meta->audit_mask & (1U << i)) {
+                snprintf(last_date, sizeof(last_date), "%s", AFDB_AUDIT_PRESETS[i].date_str);
+                break;
+            }
+        }
+    } else if (meta->revision_count > 0) {
         const MetaAuditRevision* m = &meta->revisions[meta->revision_count - 1].meta;
         snprintf(last_date, sizeof(last_date), "%04d-%02d-%02d", m->year + 1973, m->month, m->day);
     }

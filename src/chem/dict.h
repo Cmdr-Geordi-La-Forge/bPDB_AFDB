@@ -11,6 +11,8 @@ extern const size_t      NUM_DICT_RES;
 extern const char* const ATOM37_ORDER[37];
 
 const ResidueDict* dict_find_aa(uint8_t one_letter);
+int                dict_aa_index(uint8_t one_letter);
+int                dict_get_atom_idx_fast(int aa_idx, const char* atom_col, int width, bool is_terminal);
 int                dict_get_atom_idx(uint8_t one_letter, const char* atom_name, bool is_terminal);
 uint8_t            res3_to_type_id(const char* src, int width);
 const char*        type_id_to_res3(uint8_t res_type);

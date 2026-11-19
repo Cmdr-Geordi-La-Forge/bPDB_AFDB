@@ -1,8 +1,8 @@
-// src/cif/afdb_strings.h
 #ifndef BPDB_AFDB_STRINGS_H
 #define BPDB_AFDB_STRINGS_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 typedef struct {
     char        code;
@@ -15,6 +15,25 @@ typedef struct {
 
 extern const ChemCompRow CHEM_COMP_ROWS[20];
 extern const size_t      NUM_CHEM_COMP_ROWS;
+
+typedef struct {
+    uint8_t     major;
+    uint8_t     minor;
+    uint8_t     year;  // YYYY - 1973
+    uint8_t     month;
+    uint8_t     day;
+    const char* date_str;
+    const char* type;
+    const char* description; // "" means '?'
+} AfdbAuditPreset;
+
+extern const AfdbAuditPreset AFDB_AUDIT_PRESETS[6];
+extern const size_t          NUM_AFDB_AUDIT_PRESETS;
+
+// Fast pre-formatted v6 audit blocks (bitmasks 0x3E = v2..v6, 0x3C = v3..v6, 0x3F = v1..v6)
+extern const char* AFDB_AUDIT_V6_SWISSPROT_BLOCK;
+extern const char* AFDB_AUDIT_V6_TREMBL_BLOCK;
+extern const char* AFDB_AUDIT_V6_MODELORG_BLOCK;
 
 // --- printf Format Macros (enables compile-time -Wformat checking) ---
 #define AFDB_ENTRY_ID_FORMAT \
@@ -30,7 +49,7 @@ extern const size_t      NUM_CHEM_COMP_ROWS;
 
 #define AFDB_QA_METRIC_GLOBAL_FORMAT \
     "_ma_qa_metric_global.metric_id    1\n" \
-    "_ma_qa_metric_global.metric_value %.2f\n" \
+    "_ma_qa_metric_global.metric_value %s\n" \
     "_ma_qa_metric_global.model_id     1\n" \
     "_ma_qa_metric_global.ordinal_id   1\n" \
     "#\n"

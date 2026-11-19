@@ -363,3 +363,95 @@ const char* AFDB_ATOM_SITE_HEADER =
     "_atom_site.auth_asym_id\n_atom_site.auth_atom_id\n_atom_site.pdbx_PDB_model_num\n"
     "_atom_site.pdbx_sifts_xref_db_acc\n_atom_site.pdbx_sifts_xref_db_name\n"
     "_atom_site.pdbx_sifts_xref_db_num\n_atom_site.pdbx_sifts_xref_db_res\n";
+
+const AfdbAuditPreset AFDB_AUDIT_PRESETS[6] = {
+    { 1, 0, 2021 - 1973,  7,  1, "2021-07-01", "Initial release", "" },
+    { 2, 0, 2021 - 1973, 12,  9, "2021-12-09", "Remediation",     "Format fixes, new metadata, initial SwissProt release" },
+    { 3, 0, 2022 - 1973,  6,  1, "2022-06-01", "Remediation",     "Format fixes, new metadata, initial UniProt release" },
+    { 4, 0, 2022 - 1973,  9, 30, "2022-09-30", "Remediation",     "Improved prediction accuracy, small format fixes" },
+    { 5, 0, 2025 - 1973,  3, 31, "2025-03-31", "Release",         "Update to UniProt 2024_06, small format fixes" },
+    { 6, 0, 2025 - 1973,  8,  1, "2025-08-01", "Release",         "Update to UniProt 2025_03" }
+};
+
+const size_t NUM_AFDB_AUDIT_PRESETS = sizeof(AFDB_AUDIT_PRESETS) / sizeof(AFDB_AUDIT_PRESETS[0]);
+
+const char* AFDB_AUDIT_V6_SWISSPROT_BLOCK =
+    "loop_\n"
+    "_pdbx_audit_revision_details.data_content_type\n"
+    "_pdbx_audit_revision_details.description\n"
+    "_pdbx_audit_revision_details.ordinal\n"
+    "_pdbx_audit_revision_details.provider\n"
+    "_pdbx_audit_revision_details.revision_ordinal\n"
+    "_pdbx_audit_revision_details.type\n"
+    "\"Structure model\" \"Format fixes, new metadata, initial SwissProt release\" 2 repository 2 Remediation \n"
+    "\"Structure model\" \"Format fixes, new metadata, initial UniProt release\"   3 repository 3 Remediation \n"
+    "\"Structure model\" \"Improved prediction accuracy, small format fixes\"      4 repository 4 Remediation \n"
+    "\"Structure model\" \"Update to UniProt 2024_06, small format fixes\"         5 repository 5 Release     \n"
+    "\"Structure model\" \"Update to UniProt 2025_03\"                             6 repository 6 Release     \n"
+    "#\n"
+    "loop_\n"
+    "_pdbx_audit_revision_history.data_content_type\n"
+    "_pdbx_audit_revision_history.major_revision\n"
+    "_pdbx_audit_revision_history.minor_revision\n"
+    "_pdbx_audit_revision_history.ordinal\n"
+    "_pdbx_audit_revision_history.revision_date\n"
+    "\"Structure model\" 2 0 2 2021-12-09 \n"
+    "\"Structure model\" 3 0 3 2022-06-01 \n"
+    "\"Structure model\" 4 0 4 2022-09-30 \n"
+    "\"Structure model\" 5 0 5 2025-03-31 \n"
+    "\"Structure model\" 6 0 6 2025-08-01 \n"
+    "#\n";
+
+const char* AFDB_AUDIT_V6_TREMBL_BLOCK =
+    "loop_\n"
+    "_pdbx_audit_revision_details.data_content_type\n"
+    "_pdbx_audit_revision_details.description\n"
+    "_pdbx_audit_revision_details.ordinal\n"
+    "_pdbx_audit_revision_details.provider\n"
+    "_pdbx_audit_revision_details.revision_ordinal\n"
+    "_pdbx_audit_revision_details.type\n"
+    "\"Structure model\" \"Format fixes, new metadata, initial UniProt release\" 3 repository 3 Remediation \n"
+    "\"Structure model\" \"Improved prediction accuracy, small format fixes\"    4 repository 4 Remediation \n"
+    "\"Structure model\" \"Update to UniProt 2024_06, small format fixes\"       5 repository 5 Release     \n"
+    "\"Structure model\" \"Update to UniProt 2025_03\"                           6 repository 6 Release     \n"
+    "#\n"
+    "loop_\n"
+    "_pdbx_audit_revision_history.data_content_type\n"
+    "_pdbx_audit_revision_history.major_revision\n"
+    "_pdbx_audit_revision_history.minor_revision\n"
+    "_pdbx_audit_revision_history.ordinal\n"
+    "_pdbx_audit_revision_history.revision_date\n"
+    "\"Structure model\" 3 0 3 2022-06-01 \n"
+    "\"Structure model\" 4 0 4 2022-09-30 \n"
+    "\"Structure model\" 5 0 5 2025-03-31 \n"
+    "\"Structure model\" 6 0 6 2025-08-01 \n"
+    "#\n";
+
+const char* AFDB_AUDIT_V6_MODELORG_BLOCK =
+    "loop_\n"
+    "_pdbx_audit_revision_details.data_content_type\n"
+    "_pdbx_audit_revision_details.description\n"
+    "_pdbx_audit_revision_details.ordinal\n"
+    "_pdbx_audit_revision_details.provider\n"
+    "_pdbx_audit_revision_details.revision_ordinal\n"
+    "_pdbx_audit_revision_details.type\n"
+    "\"Structure model\" ?                                                       1 repository 1 \"Initial release\" \n"
+    "\"Structure model\" \"Format fixes, new metadata, initial SwissProt release\" 2 repository 2 Remediation       \n"
+    "\"Structure model\" \"Format fixes, new metadata, initial UniProt release\"   3 repository 3 Remediation       \n"
+    "\"Structure model\" \"Improved prediction accuracy, small format fixes\"      4 repository 4 Remediation       \n"
+    "\"Structure model\" \"Update to UniProt 2024_06, small format fixes\"         5 repository 5 Release           \n"
+    "\"Structure model\" \"Update to UniProt 2025_03\"                             6 repository 6 Release           \n"
+    "#\n"
+    "loop_\n"
+    "_pdbx_audit_revision_history.data_content_type\n"
+    "_pdbx_audit_revision_history.major_revision\n"
+    "_pdbx_audit_revision_history.minor_revision\n"
+    "_pdbx_audit_revision_history.ordinal\n"
+    "_pdbx_audit_revision_history.revision_date\n"
+    "\"Structure model\" 1 0 1 2021-07-01 \n"
+    "\"Structure model\" 2 0 2 2021-12-09 \n"
+    "\"Structure model\" 3 0 3 2022-06-01 \n"
+    "\"Structure model\" 4 0 4 2022-09-30 \n"
+    "\"Structure model\" 5 0 5 2025-03-31 \n"
+    "\"Structure model\" 6 0 6 2025-08-01 \n"
+    "#\n";

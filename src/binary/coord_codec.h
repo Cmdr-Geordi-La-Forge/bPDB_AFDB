@@ -13,10 +13,13 @@ typedef struct {
     uint8_t     c_term_oxt;
     int32_t     origin[3];
     uint16_t*   plddt;
+    uint32_t    plddt_cap;
     uint8_t*    packed_coords;
     size_t      packed_len;
+    size_t      packed_cap;
     EscapeAtom* escapes;
     uint32_t    escape_count;
+    uint32_t    esc_cap;
 } HotPrep;
 
 typedef struct {

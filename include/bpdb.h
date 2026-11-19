@@ -10,6 +10,16 @@
 size_t encode_afdb_to_binary(const char* cif_data, size_t cif_len, uint8_t** out_buf);
 void   decode_binary_to_afdb(const uint8_t* buf, size_t buf_len, FILE* out_f);
 
+// Reusable thread-local encoder context (eliminates per-file buffer churn in batch pipelines)
+typedef struct BpdbEncoderCtx BpdbEncoderCtx;
+
+BpdbEncoderCtx* bpdb_encoder_create(void);
+void            bpdb_encoder_destroy(BpdbEncoderCtx* ctx);
+
+// Encodes into ctx's internal buffer; *out_ptr remains valid until next call or destroy.
+size_t bpdb_encode_reuse(BpdbEncoderCtx* ctx, const char* cif_data, size_t cif_len,
+                         const uint8_t** out_ptr);
+
 // Zero-allocation Hot Geometry API for single-core geometric analysis
 typedef struct {
     uint32_t        total_res;

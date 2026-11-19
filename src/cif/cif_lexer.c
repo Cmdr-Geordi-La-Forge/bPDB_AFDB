@@ -9,15 +9,15 @@ const char* cif_skip_spaces(const char* ptr, const char* end) {
 }
 
 const char* cif_skip_line(const char* ptr, const char* end) {
-    while (ptr < end && *ptr != '\n') ptr++;
-    if (ptr < end) ptr++;
-    return ptr;
+    if (ptr >= end) return end;
+    const char* nl = (const char*)memchr(ptr, '\n', (size_t)(end - ptr));
+    return nl ? (nl + 1) : end;
 }
 
 bool cif_is_block_end(const char* ptr, const char* end) {
     if (ptr >= end) return true;
     if (*ptr == '#' || *ptr == '_') return true;
-    if ((size_t)(end - ptr) >= 5 && strncmp(ptr, "loop_", 5) == 0) return true;
+    if ((size_t)(end - ptr) >= 5 && memcmp(ptr, "loop_", 5) == 0) return true;
     return false;
 }
 
@@ -33,8 +33,10 @@ bool cif_has_inline_value(const char* after_key, const char* end) {
 const char* cif_find_block_end(const char* start, const char* end) {
     const char* p = start;
     while (p < end) {
-        if (*p == '#' && (p == start || *(p - 1) == '\n')) return p;
-        p++;
+        const char* h = (const char*)memchr(p, '#', (size_t)(end - p));
+        if (!h) return end;
+        if (h == start || *(h - 1) == '\n') return h;
+        p = h + 1;
     }
     return end;
 }
@@ -76,14 +78,16 @@ static bool extract_semicolon_span(const char* ptr, const char* end, const char*
     p++; // skip opening ';'
     const char* start = p;
     while (p < end) {
-        if (*p == ';' && *(p - 1) == '\n') {
-            size_t len = (size_t)((p - 1) - start);
+        const char* sc = (const char*)memchr(p, ';', (size_t)(end - p));
+        if (!sc) return false;
+        if (sc > start && *(sc - 1) == '\n') {
+            size_t len = (size_t)((sc - 1) - start);
             if (len > 0 && start[len - 1] == '\r') len--;
             *out_start = start;
             *out_len   = len;
             return true;
         }
-        p++;
+        p = sc + 1;
     }
     return false;
 }

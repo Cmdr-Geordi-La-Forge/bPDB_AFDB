@@ -8,6 +8,7 @@ const char* find_token(const char* ptr, const char* end, const char* token);
 void        strip_whitespace_fixed(const char* src, int width, char* dst, int max_len);
 char*       str_dup_n(const char* src, size_t len);
 int32_t     parse_number(const char* str, int width);
+int32_t     parse_fixed_decimal2(const char* str, int width);
 uint64_t    parse_hex_uint64(const char* str);
 void        format_fixed_decimal(char* buf, int32_t val, int decimals);
 

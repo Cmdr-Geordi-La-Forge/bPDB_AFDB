@@ -8,11 +8,19 @@ const char* find_token(const char* ptr, const char* end, const char* token) {
     if (len == 0 || ptr >= end || (size_t)(end - ptr) < len) {
         return NULL;
     }
-    const char* limit = end - len;
-    for (const char* p = ptr; p <= limit; p++) {
-        if (memcmp(p, token, len) == 0) {
+    unsigned char first = (unsigned char)token[0];
+    char          last  = token[len - 1];
+    const char*   limit = end - len;
+    const char*   p     = ptr;
+
+    while (p <= limit) {
+        p = (const char*)memchr(p, first, (size_t)(limit - p + 1));
+        if (!p) return NULL;
+        if (p[len - 1] == last &&
+            (len <= 2 || memcmp(p + 1, token + 1, len - 2) == 0)) {
             return p;
         }
+        p++;
     }
     return NULL;
 }
@@ -48,6 +56,39 @@ int32_t parse_number(const char* str, int width) {
         else if (c >= '0' && c <= '9') val = val * 10 + (c - '0');
     }
     return sign * val;
+}
+
+int32_t parse_fixed_decimal2(const char* str, int width) {
+    const char* p = str;
+    const char* e = str + width;
+    while (p < e && (*p == ' ' || *p == '\t')) p++;
+    int neg = 0;
+    if (p < e && *p == '-') { neg = 1; p++; }
+
+    int32_t val = 0;
+    int frac_digits = 0;
+    int seen_dot = 0;
+    while (p < e) {
+        char c = *p++;
+        unsigned d = (unsigned)(c - '0');
+        if (d < 10U) {
+            if (!seen_dot) {
+                val = val * 10 + (int32_t)d;
+            } else if (frac_digits < 2) {
+                val = val * 10 + (int32_t)d;
+                frac_digits++;
+            }
+        } else if (c == '.') {
+            seen_dot = 1;
+        } else {
+            break;
+        }
+    }
+    while (frac_digits < 2) {
+        val *= 10;
+        frac_digits++;
+    }
+    return neg ? -val : val;
 }
 
 uint64_t parse_hex_uint64(const char* str) {
