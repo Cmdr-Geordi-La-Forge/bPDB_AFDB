@@ -170,6 +170,12 @@ static void write_entity_blocks(FILE* out_f, const AfdbMetadata* meta, const Cha
     fprintf(out_f, "#\n");
 }
 
+static uint16_t read_res_plddt(const ChainView* chain, uint32_t r) {
+    uint16_t val = 0;
+    memcpy(&val, chain->plddt_bytes + (size_t)r * 2U, 2);
+    return val;
+}
+
 static void write_qa_metric_blocks(FILE* out_f, const AfdbMetadata* meta, const ChainView* chain, int num_width) {
     fprintf(out_f, "%s", (meta->template_count > 0) ? AFDB_MA_DATA_MULTI : AFDB_MA_DATA_SINGLE);
     fprintf(out_f, "%s", AFDB_MA_MODEL_LIST);
@@ -180,9 +186,6 @@ static void write_qa_metric_blocks(FILE* out_f, const AfdbMetadata* meta, const 
 
     fprintf(out_f, "%s", AFDB_QA_METRIC_LOCAL_HEADER);
 
-    CoordStream cs;
-    coord_stream_init(&cs, chain);
-
     for (uint32_t i = 0; i < chain->total_res; i++) {
         const ResidueDict* rd = dict_find_aa(chain->seq[i]);
         if (!rd) continue;
@@ -190,17 +193,8 @@ static void write_qa_metric_blocks(FILE* out_f, const AfdbMetadata* meta, const 
         char res3[4];
         strip_whitespace_fixed(rd->name, 4, res3, 3);
 
-        int num_atoms = (i == chain->total_res - 1) ? rd->numHeavyAtomsTerm : rd->numHeavyAtoms;
-        int32_t b = 0;
-
-        for (int a = 0; a < num_atoms; a++) {
-            int32_t tb = 0, tx = 0, ty = 0, tz = 0;
-            coord_stream_step(&cs, &tb, &tx, &ty, &tz, NULL);
-            if (a == 0) b = tb;
-        }
-
         char sb[16];
-        format_fixed_decimal(sb, b, 2);
+        format_fixed_decimal(sb, (int32_t)read_res_plddt(chain, i), 2);
         fprintf(out_f, "%c %-3s %-*d 2 %-5s 1 %-*u \n",
                 chain->chain_id, res3, num_width, chain->first_seq_id + (int)i, sb, num_width, i + 1);
     }
@@ -523,12 +517,14 @@ static void format_coord(char* buf, int32_t val, bool neg_zero) {
 
 void cif_write_atom_site(FILE* out_f, const AfdbMetadata* meta, const ChainView* chain) {
     const uint8_t* w = chain->fmt_widths;
-    bool af2_neg_zero = (meta->flags & FLAG_AF2) != 0;
-    int db_seq_start  = (meta->flags & FLAG_DBREF) ? meta->dbref.db_seq_begin : chain->first_seq_id;
+    int db_seq_start = (meta->flags & FLAG_DBREF) ? meta->dbref.db_seq_begin : chain->first_seq_id;
 
     fprintf(out_f, "%s", AFDB_ATOM_SITE_HEADER);
 
-    int atom_id = 1;
+    int      atom_id         = 1;
+    uint32_t stream_atom_idx = 0;
+    uint32_t nz_pos          = 0;
+
     CoordStream cs;
     coord_stream_init(&cs, chain);
 
@@ -537,17 +533,27 @@ void cif_write_atom_site(FILE* out_f, const AfdbMetadata* meta, const ChainView*
         const ResidueDict* rd = dict_find_aa(code);
         if (!rd) continue;
 
-        int num_atoms = (i == chain->total_res - 1) ? rd->numHeavyAtomsTerm : rd->numHeavyAtoms;
-        int seq_id    = chain->first_seq_id + (int)i;
-        int db_num    = db_seq_start + (int)i;
+        int num_atoms = (i == chain->total_res - 1 && chain->c_term_oxt)
+                      ? rd->numHeavyAtomsTerm : rd->numHeavyAtoms;
+        int seq_id = chain->first_seq_id + (int)i;
+        int db_num = db_seq_start + (int)i;
 
-        int32_t dec_b[30] = {0}, dec_x[30] = {0}, dec_y[30] = {0}, dec_z[30] = {0};
+        int32_t dec_xyz[30][3];
+        if (!coord_stream_next_residue(&cs, rd, num_atoms, dec_xyz)) break;
+
         uint8_t xyz_lsb[30] = {0};
-
         for (int a = 0; a < num_atoms; a++) {
-            coord_stream_step(&cs, &dec_b[a], &dec_x[a], &dec_y[a], &dec_z[a],
-                              af2_neg_zero ? &xyz_lsb[a] : NULL);
+            while (nz_pos < meta->neg_zero_count &&
+                   (meta->neg_zeros[nz_pos] >> 2) == stream_atom_idx) {
+                uint32_t axis = meta->neg_zeros[nz_pos] & 3U;
+                if (axis >= 1U && axis <= 3U) xyz_lsb[a] |= (uint8_t)(1U << (axis - 1U));
+                nz_pos++;
+            }
+            stream_atom_idx++;
         }
+
+        char sb[16];
+        format_fixed_decimal(sb, (int32_t)read_res_plddt(chain, i), 2);
 
         for (int j = 0; j < 37; j++) {
             for (int a = 0; a < num_atoms; a++) {
@@ -558,11 +564,10 @@ void cif_write_atom_site(FILE* out_f, const AfdbMetadata* meta, const ChainView*
                 char elem[3];
                 strip_whitespace_fixed(rd->elements[a], 2, elem, 2);
 
-                char sx[16], sy[16], sz[16], sb[16];
-                format_fixed_decimal(sb, dec_b[a], 2);
-                format_coord(sx, dec_x[a], (xyz_lsb[a] & (1U << 0)) != 0);
-                format_coord(sy, dec_y[a], (xyz_lsb[a] & (1U << 1)) != 0);
-                format_coord(sz, dec_z[a], (xyz_lsb[a] & (1U << 2)) != 0);
+                char sx[16], sy[16], sz[16];
+                format_coord(sx, dec_xyz[a][0], (xyz_lsb[a] & (1U << 0)) != 0);
+                format_coord(sy, dec_xyz[a][1], (xyz_lsb[a] & (1U << 1)) != 0);
+                format_coord(sz, dec_xyz[a][2], (xyz_lsb[a] & (1U << 2)) != 0);
 
                 fprintf(out_f,
                         "ATOM %-*d%-2s%-*s. %-4s%c 1 %-*d? %-*s%-*s%-*s1.00 %-*s? %-*d%-4s%c %-*s1 %s UNP %-*d%c \n",

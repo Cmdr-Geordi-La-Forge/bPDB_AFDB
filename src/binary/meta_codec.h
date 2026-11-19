@@ -6,8 +6,8 @@
 #include "bpdb_internal.h"
 #include "binary/byte_buf.h"
 
-size_t meta_encoded_size(const AfdbMetadata* meta);
-void   meta_write_binary(ByteWriter* w, const AfdbMetadata* meta);
-bool   meta_read_binary(ByteReader* r, AfdbMetadata* out_meta);
+size_t meta_cold_encoded_size(const AfdbMetadata* meta);
+void   meta_write_cold(ByteWriter* w, const AfdbMetadata* meta, const ParsedChain* chain);
+bool   meta_read_cold(ByteReader* r, ChainView* chain, AfdbMetadata* out_meta);
 
 #endif // BPDB_META_CODEC_H

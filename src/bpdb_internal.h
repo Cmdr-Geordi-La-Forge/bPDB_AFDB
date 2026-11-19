@@ -27,6 +27,7 @@
 #define FLAG_TEMPLATES  (1ULL << 49)
 #define FLAG_DBREF      (1ULL << 50)
 #define FLAG_AUDIT      (1ULL << 51)
+#define FLAG_NEG_ZERO   (1ULL << 52)
 
 // --- Template TLV Tags (used inside FLAG_TEMPLATES) ---
 enum {
@@ -99,6 +100,8 @@ typedef struct {
     uint16_t desc_len;
 } __attribute__((packed)) MetaAuditRevision;
 
+#define BPDB_PARENT_PREV_C 29
+
 // --- Chemistry Dictionary Entry ---
 typedef struct {
     uint8_t code;
@@ -114,6 +117,7 @@ typedef struct {
     uint8_t numHydrogensTerm;
     char    hydroNames[25][5];
     char    hydroElements[25][3];
+    uint8_t parent[30];
 } ResidueDict;
 
 // --- In-Memory Intermediate Representations ---
@@ -129,6 +133,33 @@ typedef struct {
     char* type;
     char* description;
 } AuditRevisionEntry;
+
+typedef struct {
+    char     magic[4];      //  0..3 : "bPDB"
+    uint8_t  version;       //  4    : 2
+    uint8_t  chain_id;      //  5    : 'A'
+    uint8_t  c_term_oxt;    //  6    : 1 if C-terminal residue has OXT
+    uint8_t  cold_codec;    //  7    : 0 = raw Cold Metadata
+    uint64_t flags;         //  8..15: FLAG_* bitmask
+
+    uint32_t total_res;     // 16..19
+    uint32_t total_atoms;   // 20..23
+    int32_t  first_seq_id;  // 24..27
+    uint32_t escape_count;  // 28..31: count of 12-byte EscapeAtom entries
+
+    int32_t  origin[3];     // 32..43: atom 0 exact int32 (x, y, z) * 1000
+    uint32_t cold_offset;   // 44..47: byte offset where Cold Metadata starts
+
+    char     accession[12]; // 48..59
+    uint16_t frag_num;      // 60..61
+    uint16_t reserved;      // 62..63
+} BpdbV2Header;
+
+typedef char bpdb_v2_hdr_size_check[(sizeof(BpdbV2Header) == 64) ? 1 : -1];
+
+typedef struct {
+    int32_t x, y, z;
+} EscapeAtom;
 
 typedef struct {
     char     accession[13];
@@ -148,6 +179,9 @@ typedef struct {
 
     AuditRevisionEntry* revisions;
     uint32_t            revision_count;
+
+    uint32_t* neg_zeros;      // sorted (stream_atom_idx << 2) | axis (1=X, 2=Y, 3=Z)
+    uint32_t  neg_zero_count;
 } AfdbMetadata;
 
 typedef struct {
@@ -166,13 +200,19 @@ typedef struct {
 } ParsedChain;
 
 typedef struct {
-    uint32_t       total_res;
-    char           chain_id;
-    int            first_seq_id;
-    uint8_t        fmt_widths[8];
-    const uint8_t* seq;
-    const uint8_t* coord_stream;
-    const uint8_t* stream_end;
+    uint32_t          total_res;
+    uint32_t          total_atoms;
+    uint32_t          escape_count;
+    int32_t           first_seq_id;
+    int32_t           origin[3];
+    char              chain_id;
+    uint8_t           c_term_oxt;
+    uint8_t           fmt_widths[8];
+    const uint8_t*    seq;
+    const uint8_t*    plddt_bytes;  // total_res * 2 bytes (uint16_t scaled x100)
+    const uint8_t*    coord_stream; // 12-bit bonded-parent deltas (+ >=7B zero pad)
+    size_t            coord_len;
+    const EscapeAtom* escapes;
 } ChainView;
 
 void afdb_meta_free(AfdbMetadata* meta);

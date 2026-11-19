@@ -29,6 +29,7 @@ void afdb_meta_free(AfdbMetadata* meta) {
         }
         free(meta->revisions);
     }
+    free(meta->neg_zeros);
     memset(meta, 0, sizeof(*meta));
 }
 
@@ -236,42 +237,30 @@ static size_t templates_tlv_payload_bytes(const AfdbMetadata* meta) {
     return bytes;
 }
 
-size_t meta_encoded_size(const AfdbMetadata* meta) {
-    size_t size = 64 + 8; // 64-byte global header + 8-byte bitmask
+size_t meta_cold_encoded_size(const AfdbMetadata* meta) {
+    size_t size = 8; // uint8_t fmt_widths[8]
 
     if (meta->flags & FLAG_RESOLUTION) size += 4;
     if (meta->flags & FLAG_ENTITY)     size += 4 + (meta->entity_desc ? strlen(meta->entity_desc) : 0);
-    if (meta->flags & FLAG_STRUCT)     size += 8 + (meta->conf_count * sizeof(MetaStructConf));
+    if (meta->flags & FLAG_STRUCT) {
+        if (meta->flags & FLAG_AFDB) size += 4 + (meta->conf_count * 5U);
+        else                         size += 8 + (meta->conf_count * sizeof(MetaStructConf));
+    }
     if (meta->flags & FLAG_TEMPLATES)  size += 4 + templates_tlv_payload_bytes(meta);
+    if (meta->flags & FLAG_DBREF)      size += 4 + dbref_tlv_payload_bytes(&meta->dbref);
 
-    if (meta->flags & FLAG_DBREF) size += 4 + dbref_tlv_payload_bytes(&meta->dbref);
-    
     if (meta->flags & FLAG_AUDIT) {
         size += 4;
         for (uint32_t i = 0; i < meta->revision_count; i++) {
             size += sizeof(MetaAuditRevision)
-                  + meta->revisions[i].meta.desc_len + 1
-                  + meta->revisions[i].meta.type_len + 1;
+                  + meta->revisions[i].meta.desc_len
+                  + meta->revisions[i].meta.type_len;
         }
     }
+    if (meta->flags & FLAG_NEG_ZERO) {
+        size += 4 + ((size_t)meta->neg_zero_count * 4U);
+    }
     return size;
-}
-
-static void write_global_header(ByteWriter* w, const AfdbMetadata* meta) {
-    uint8_t hdr[64];
-    memset(hdr, 0, sizeof(hdr));
-    memcpy(hdr, "bPDB", 4);
-    hdr[4] = 0x00;
-    hdr[5] = 1;
-    hdr[6] = 1;
-    hdr[7] = 0;
-    memcpy(hdr + 8, meta->accession, 12);
-
-    uint16_t tot_mod = 0;
-    uint16_t cur_mod = (meta->frag_num > 0) ? (uint16_t)(meta->frag_num - 1) : 0;
-    memcpy(hdr + 20, &tot_mod, 2);
-    memcpy(hdr + 22, &cur_mod, 2);
-    bw_write(w, hdr, sizeof(hdr));
 }
 
 static void write_tlv_str(ByteWriter* w, uint8_t tag, const char* s) {
@@ -301,9 +290,8 @@ static void write_templates_tlv(ByteWriter* w, const AfdbMetadata* meta) {
     }
 }
 
-void meta_write_binary(ByteWriter* w, const AfdbMetadata* meta) {
-    write_global_header(w, meta);
-    bw_write(w, &meta->flags, 8);
+void meta_write_cold(ByteWriter* w, const AfdbMetadata* meta, const ParsedChain* chain) {
+    bw_write(w, chain->fmt_widths, 8);
 
     if (meta->flags & FLAG_RESOLUTION) {
         bw_write(w, &meta->global_plddt, 4);
@@ -314,38 +302,44 @@ void meta_write_binary(ByteWriter* w, const AfdbMetadata* meta) {
         if (dlen > 0) bw_write(w, meta->entity_desc, dlen);
     }
     if (meta->flags & FLAG_STRUCT) {
-        uint64_t count = (uint64_t)meta->conf_count;
-        bw_write(w, &count, 8);
-        bw_write(w, meta->confs, meta->conf_count * sizeof(MetaStructConf));
+        if (meta->flags & FLAG_AFDB) {
+            uint32_t count = (uint32_t)meta->conf_count;
+            bw_write(w, &count, 4);
+            for (size_t i = 0; i < meta->conf_count; i++) {
+                const MetaStructConf* c = &meta->confs[i];
+                uint16_t start_idx = (uint16_t)(c->start.resSeq - (uint32_t)chain->first_seq_id);
+                uint16_t length    = (c->end.resSeq >= c->start.resSeq) ? (uint16_t)(c->end.resSeq - c->start.resSeq + 1U) : 0;
+                bw_write(w, &start_idx, 2);
+                bw_write(w, &length, 2);
+                bw_write_u8(w, c->type_id);
+            }
+        } else {
+            uint64_t count = (uint64_t)meta->conf_count;
+            bw_write(w, &count, 8);
+            bw_write(w, meta->confs, meta->conf_count * sizeof(MetaStructConf));
+        }
     }
     if (meta->flags & FLAG_TEMPLATES) {
         write_templates_tlv(w, meta);
     }
-    if (meta->flags & FLAG_DBREF) write_dbref_tlv(w, &meta->dbref);
-    
+    if (meta->flags & FLAG_DBREF) {
+        write_dbref_tlv(w, &meta->dbref);
+    }
     if (meta->flags & FLAG_AUDIT) {
         bw_write(w, &meta->revision_count, 4);
         for (uint32_t i = 0; i < meta->revision_count; i++) {
             const AuditRevisionEntry* rev = &meta->revisions[i];
             bw_write(w, &rev->meta, sizeof(MetaAuditRevision));
             if (rev->meta.desc_len > 0) bw_write(w, rev->description, rev->meta.desc_len);
-            bw_write_u8(w, '\0');
             if (rev->meta.type_len > 0) bw_write(w, rev->type, rev->meta.type_len);
-            bw_write_u8(w, '\0');
         }
     }
-}
-
-static bool read_global_header(ByteReader* r, AfdbMetadata* out_meta) {
-    uint8_t hdr[64];
-    if (!br_read(r, hdr, sizeof(hdr))) return false;
-    memcpy(out_meta->accession, hdr + 8, 12);
-    out_meta->accession[12] = '\0';
-
-    uint16_t cur_mod = 0;
-    memcpy(&cur_mod, hdr + 22, 2);
-    out_meta->frag_num = (int)cur_mod + 1;
-    return true;
+    if (meta->flags & FLAG_NEG_ZERO) {
+        bw_write(w, &meta->neg_zero_count, 4);
+        if (meta->neg_zero_count > 0) {
+            bw_write(w, meta->neg_zeros, (size_t)meta->neg_zero_count * 4U);
+        }
+    }
 }
 
 static bool read_templates_tlv(ByteReader* r, AfdbMetadata* out_meta) {
@@ -415,58 +409,84 @@ static bool read_audit_block(ByteReader* r, AfdbMetadata* out_meta) {
     for (uint32_t i = 0; i < count; i++) {
         AuditRevisionEntry* rev = &out_meta->revisions[i];
         if (!br_read(r, &rev->meta, sizeof(MetaAuditRevision))) return false;
-        rev->description = br_read_str(r, rev->meta.desc_len, true);
-        rev->type        = br_read_str(r, rev->meta.type_len, true);
+        rev->description = br_read_str(r, rev->meta.desc_len, false);
+        rev->type        = br_read_str(r, rev->meta.type_len, false);
         if (r->error) return false;
     }
     return true;
 }
 
-bool meta_read_binary(ByteReader* r, AfdbMetadata* out_meta) {
-    memset(out_meta, 0, sizeof(*out_meta));
-
-    if (br_remaining(r) < 80) return false;
-    if (!read_global_header(r, out_meta)) return false;
-    if (!br_read(r, &out_meta->flags, 8)) return false;
+bool meta_read_cold(ByteReader* r, ChainView* chain, AfdbMetadata* out_meta) {
+    if (!br_read(r, chain->fmt_widths, 8)) return false;
 
     if (out_meta->flags & FLAG_RESOLUTION) {
         if (!br_read(r, &out_meta->global_plddt, 4)) return false;
     }
-
     if (out_meta->flags & FLAG_ENTITY) {
         uint32_t dlen = 0;
         if (!br_read(r, &dlen, 4)) return false;
-        if (dlen > 0) {
-            out_meta->entity_desc = br_read_str(r, dlen, false);
-            if (r->error) return false;
+        out_meta->entity_desc = br_read_str(r, dlen, false);
+        if (r->error) return false;
+    }
+    if (out_meta->flags & FLAG_STRUCT) {
+        if (out_meta->flags & FLAG_AFDB) {
+            uint32_t count = 0;
+            if (!br_read(r, &count, 4)) return false;
+            if ((size_t)count * 5U > br_remaining(r)) { r->error = true; return false; }
+            out_meta->confs = calloc(count, sizeof(MetaStructConf));
+            if (!out_meta->confs && count > 0) { r->error = true; return false; }
+            out_meta->conf_count = count;
+
+            for (uint32_t i = 0; i < count; i++) {
+                uint16_t start_idx = 0, length = 0;
+                uint8_t  type_id = 0;
+                if (!br_read(r, &start_idx, 2) || !br_read(r, &length, 2) || !br_read(r, &type_id, 1)) {
+                    return false;
+                }
+                uint32_t end_idx = (length > 0) ? ((uint32_t)start_idx + length - 1U) : start_idx;
+                if (start_idx >= chain->total_res || end_idx >= chain->total_res) {
+                    r->error = true;
+                    return false;
+                }
+                MetaStructConf* c = &out_meta->confs[i];
+                c->start.resType  = (uint8_t)(chain->seq[start_idx] - 0x40);
+                c->start.chain[0] = chain->chain_id;
+                c->start.resSeq   = (uint32_t)chain->first_seq_id + start_idx;
+                c->end.resType    = (uint8_t)(chain->seq[end_idx] - 0x40);
+                c->end.chain[0]   = chain->chain_id;
+                c->end.resSeq     = (uint32_t)chain->first_seq_id + end_idx;
+                c->length         = length;
+                c->type_id        = type_id;
+            }
+        } else {
+            uint64_t count = 0;
+            if (!br_read(r, &count, 8)) return false;
+            size_t bytes = (size_t)count * sizeof(MetaStructConf);
+            if (bytes > br_remaining(r)) return false;
+            out_meta->confs = malloc(bytes);
+            if (!out_meta->confs && bytes > 0) return false;
+            if (!br_read(r, out_meta->confs, bytes)) return false;
+            out_meta->conf_count = (size_t)count;
         }
     }
-    if (!out_meta->entity_desc) {
-        out_meta->entity_desc = str_dup_n("Unknown", 7);
-    }
-
-    if (out_meta->flags & FLAG_STRUCT) {
-        uint64_t count = 0;
-        if (!br_read(r, &count, 8)) return false;
-        size_t bytes = (size_t)count * sizeof(MetaStructConf);
-        if (bytes > br_remaining(r)) return false;
-        out_meta->confs = malloc(bytes);
-        if (!out_meta->confs && bytes > 0) return false;
-        if (!br_read(r, out_meta->confs, bytes)) return false;
-        out_meta->conf_count = (size_t)count;
-    }
-
     if (out_meta->flags & FLAG_TEMPLATES) {
         if (!read_templates_tlv(r, out_meta)) return false;
     }
-
     if (out_meta->flags & FLAG_DBREF) {
         if (!read_dbref_tlv(r, out_meta)) return false;
     }
-
     if (out_meta->flags & FLAG_AUDIT) {
         if (!read_audit_block(r, out_meta)) return false;
     }
-
+    if (out_meta->flags & FLAG_NEG_ZERO) {
+        uint32_t count = 0;
+        if (!br_read(r, &count, 4)) return false;
+        size_t bytes = (size_t)count * 4U;
+        if (bytes > br_remaining(r)) { r->error = true; return false; }
+        out_meta->neg_zeros = count ? malloc(bytes) : NULL;
+        if (count && !out_meta->neg_zeros) { r->error = true; return false; }
+        if (count && !br_read(r, out_meta->neg_zeros, bytes)) return false;
+        out_meta->neg_zero_count = count;
+    }
     return !r->error;
 }
