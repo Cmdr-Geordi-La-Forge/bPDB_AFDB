@@ -8,6 +8,22 @@
 #include <stdbool.h>
 #include <string.h>
 
+static uint8_t afdb_major_version(const AfdbMetadata* meta) {
+    if (meta->flags & FLAG_AUDIT) {
+        if (meta->audit_mask != 0 && meta->audit_mask != AUDIT_MASK_RAW) {
+            for (int i = (int)NUM_AFDB_AUDIT_PRESETS - 1; i >= 0; i--) {
+                if (meta->audit_mask & (1U << i)) {
+                    return AFDB_AUDIT_PRESETS[i].major;
+                }
+            }
+        }
+        if (meta->revision_count > 0) {
+            return meta->revisions[meta->revision_count - 1].meta.major;
+        }
+    }
+    return 6;
+}
+
 static bool eq_ci(const char* a, const char* b) {
     while (*a && *b) {
         if (tolower((unsigned char)*a) != tolower((unsigned char)*b)) return false;
@@ -141,7 +157,7 @@ static void write_chem_and_citation_blocks(FILE* out_f, const AfdbMetadata* meta
 
     fprintf(out_f, "%s", AFDB_AUDIT_BLOCK);
     write_chem_comp_block(out_f, present);
-    fprintf(out_f, "%s", AFDB_CITATION_BLOCK);
+    fprintf(out_f, "%s", (afdb_major_version(meta) <= 4) ? AFDB_CITATION_BLOCK_V4 : AFDB_CITATION_BLOCK);
     fprintf(out_f, AFDB_DATABASE_2_FORMAT, meta->accession, meta->frag_num);
 }
 
@@ -558,8 +574,11 @@ void cif_write_afdb_metadata(FILE* out_f, const AfdbMetadata* meta, const ChainV
 
     fprintf(out_f, "%s", AFDB_PDBX_DATA_USAGE);
 
+    uint8_t af_ver = afdb_major_version(meta);
     char last_date[16] = "2021-07-01";
-    if (meta->audit_mask != 0 && meta->audit_mask != AUDIT_MASK_RAW) {
+    if (af_ver == 4) {
+        snprintf(last_date, sizeof(last_date), "2022-06-01");
+    } else if (meta->audit_mask != 0 && meta->audit_mask != AUDIT_MASK_RAW) {
         for (int i = (int)NUM_AFDB_AUDIT_PRESETS - 1; i >= 0; i--) {
             if (meta->audit_mask & (1U << i)) {
                 snprintf(last_date, sizeof(last_date), "%s", AFDB_AUDIT_PRESETS[i].date_str);
@@ -600,6 +619,8 @@ void cif_write_atom_site(FILE* out_f, const AfdbMetadata* meta, const ChainView*
 
     CoordStream cs;
     coord_stream_init(&cs, chain);
+
+    const char* occ = (afdb_major_version(meta) <= 4) ? "1.0" : "1.00";
 
     for (uint32_t i = 0; i < chain->total_res; i++) {
         uint8_t code = chain->seq[i];
@@ -643,9 +664,9 @@ void cif_write_atom_site(FILE* out_f, const AfdbMetadata* meta, const ChainView*
                 format_coord(sz, dec_xyz[a][2], (xyz_lsb[a] & (1U << 2)) != 0);
 
                 fprintf(out_f,
-                        "ATOM %-*d%-2s%-*s. %-4s%c 1 %-*d? %-*s%-*s%-*s1.00 %-*s? %-*d%-4s%c %-*s1 %s UNP %-*d%c \n",
+                        "ATOM %-*d%-2s%-*s. %-4s%c 1 %-*d? %-*s%-*s%-*s%s %-*s? %-*d%-4s%c %-*s1 %s UNP %-*d%c \n",
                         w[0], atom_id, elem, w[1], clean_atom, rd->name, chain->chain_id,
-                        w[2], seq_id, w[3], sx, w[4], sy, w[5], sz, w[6], sb,
+                        w[2], seq_id, w[3], sx, w[4], sy, w[5], sz, occ, w[6], sb,
                         w[2], seq_id, rd->name, chain->chain_id, w[1], clean_atom,
                         meta->accession, w[7], db_num, code);
                 atom_id++;

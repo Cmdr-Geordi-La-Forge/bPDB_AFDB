@@ -109,6 +109,7 @@ extern const char* AFDB_POLY_SEQ_SCHEME_HEADER;
 
 extern const char* AFDB_AUDIT_BLOCK;
 extern const char* AFDB_CITATION_BLOCK;
+extern const char* AFDB_CITATION_BLOCK_V4;
 extern const char* AFDB_MA_MODEL_LIST;
 extern const char* AFDB_MA_POST_BLOCK;
 extern const char* AFDB_MA_TEMPLATE_DETAILS_HEADER;
