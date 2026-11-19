@@ -82,4 +82,31 @@ static inline void bw_write_zeros(ByteWriter* w, size_t n) {
     }
 }
 
+static inline size_t bw_varlen_size(size_t len) {
+    return (len < 255) ? 1 : 3;
+}
+
+static inline void bw_write_varlen(ByteWriter* w, size_t len) {
+    if (len < 255) {
+        bw_write_u8(w, (uint8_t)len);
+    } else {
+        uint16_t len16 = (len > 65535) ? 65535 : (uint16_t)len;
+        bw_write_u8(w, 0xFF);
+        bw_write(w, &len16, 2);
+    }
+}
+
+static inline bool br_read_varlen(ByteReader* r, size_t* out_len) {
+    uint8_t b = 0;
+    if (!br_read(r, &b, 1)) return false;
+    if (b < 255) {
+        *out_len = b;
+        return true;
+    }
+    uint16_t len16 = 0;
+    if (!br_read(r, &len16, 2)) return false;
+    *out_len = len16;
+    return true;
+}
+
 #endif // BPDB_BYTE_BUF_H

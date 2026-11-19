@@ -19,6 +19,6 @@ void   coord_write_chain(ByteWriter* w, const ParsedChain* chain);
 bool   coord_read_chain_view(ByteReader* r, ChainView* out_view);
 
 void   coord_stream_init(CoordStream* cs, const ChainView* view);
-bool   coord_stream_step(CoordStream* cs, int32_t* b, int32_t* x, int32_t* y, int32_t* z);
+bool coord_stream_step(CoordStream* cs, int32_t* b, int32_t* x, int32_t* y, int32_t* z, uint8_t* out_xyz_lsb);
 
 #endif // BPDB_COORD_CODEC_H

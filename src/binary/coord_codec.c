@@ -9,12 +9,12 @@ void parsed_chain_free(ParsedChain* chain) {
     memset(chain, 0, sizeof(*chain));
 }
 
-static void push_anchor(ByteWriter* w, int32_t b, int32_t x, int32_t y, int32_t z) {
+static void push_anchor(ByteWriter* w, int32_t b, int32_t x, int32_t y, int32_t z, uint8_t xyz_lsb) {
     int16_t blk[8];
     blk[0] = (int16_t)(((uint32_t)(b >> 15) << 1) | 1U);
-    blk[1] = (int16_t)((uint32_t)(x >> 15) << 1);
-    blk[2] = (int16_t)((uint32_t)(y >> 15) << 1);
-    blk[3] = (int16_t)((uint32_t)(z >> 15) << 1);
+    blk[1] = (int16_t)(((uint32_t)(x >> 15) << 1) | ((xyz_lsb >> 0) & 1U));
+    blk[2] = (int16_t)(((uint32_t)(y >> 15) << 1) | ((xyz_lsb >> 1) & 1U));
+    blk[3] = (int16_t)(((uint32_t)(z >> 15) << 1) | ((xyz_lsb >> 2) & 1U));
     blk[4] = (int16_t)((uint32_t)(b & 0x7FFF) << 1);
     blk[5] = (int16_t)((uint32_t)(x & 0x7FFF) << 1);
     blk[6] = (int16_t)((uint32_t)(y & 0x7FFF) << 1);
@@ -22,12 +22,12 @@ static void push_anchor(ByteWriter* w, int32_t b, int32_t x, int32_t y, int32_t 
     bw_write(w, blk, sizeof(blk));
 }
 
-static void push_delta(ByteWriter* w, int32_t db, int32_t dx, int32_t dy, int32_t dz) {
+static void push_delta(ByteWriter* w, int32_t db, int32_t dx, int32_t dy, int32_t dz, uint8_t xyz_lsb) {
     int16_t blk[4];
     blk[0] = (int16_t)(((uint32_t)db << 1) & ~1U);
-    blk[1] = (int16_t)((uint32_t)dx << 1);
-    blk[2] = (int16_t)((uint32_t)dy << 1);
-    blk[3] = (int16_t)((uint32_t)dz << 1);
+    blk[1] = (int16_t)(((uint32_t)dx << 1) | ((xyz_lsb >> 0) & 1U));
+    blk[2] = (int16_t)(((uint32_t)dy << 1) | ((xyz_lsb >> 1) & 1U));
+    blk[3] = (int16_t)(((uint32_t)dz << 1) | ((xyz_lsb >> 2) & 1U));
     bw_write(w, blk, sizeof(blk));
 }
 
@@ -64,8 +64,10 @@ static void serialize_coordinates(ByteWriter* w, const ParsedChain* chain) {
             int32_t y = res->present[a] ? res->coords[a][2] : 0;
             int32_t z = res->present[a] ? res->coords[a][3] : 0;
 
+            uint8_t lsb = res->present[a] ? res->xyz_lsb[a] : 0;
+
             if (first_atom) {
-                push_anchor(w, b, x, y, z);
+                push_anchor(w, b, x, y, z, lsb);
                 first_atom = false;
             } else {
                 int32_t db = b - prev_b;
@@ -75,9 +77,9 @@ static void serialize_coordinates(ByteWriter* w, const ParsedChain* chain) {
 
                 if (delta_in_range(db) && delta_in_range(dx) &&
                     delta_in_range(dy) && delta_in_range(dz)) {
-                    push_delta(w, db, dx, dy, dz);
+                    push_delta(w, db, dx, dy, dz, lsb);
                 } else {
-                    push_anchor(w, b, x, y, z);
+                    push_anchor(w, b, x, y, z, lsb);
                 }
             }
 
@@ -140,10 +142,16 @@ void coord_stream_init(CoordStream* cs, const ChainView* view) {
     cs->end = view->stream_end;
 }
 
-bool coord_stream_step(CoordStream* cs, int32_t* b, int32_t* x, int32_t* y, int32_t* z) {
+bool coord_stream_step(CoordStream* cs, int32_t* b, int32_t* x, int32_t* y, int32_t* z,
+                       uint8_t* out_xyz_lsb) {
     if (cs->ptr >= cs->end) return false;
     size_t need = (cs->ptr[0] & 1U) ? 16 : 8;
     if ((size_t)(cs->end - cs->ptr) < need) return false;
+
+    if (out_xyz_lsb) {
+        const uint8_t* p = cs->ptr;
+        *out_xyz_lsb = (uint8_t)((p[2] & 1U) | ((p[4] & 1U) << 1) | ((p[6] & 1U) << 2));
+    }
     simd_decode_step(&cs->acc, &cs->ptr, b, x, y, z);
     return true;
 }

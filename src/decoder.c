@@ -19,7 +19,7 @@ void decode_binary_to_afdb(const uint8_t* buf, size_t buf_len, FILE* out_f) {
         if ((meta.flags & FLAG_AFDB) && (meta.flags & FLAG_CIF)) {
             cif_write_afdb_metadata(out_f, &meta, &chain);
         }
-        cif_write_atom_site(out_f, &chain, meta.accession);
+        cif_write_atom_site(out_f, &meta, &chain);
         fprintf(out_f, "#\n");
     }
 

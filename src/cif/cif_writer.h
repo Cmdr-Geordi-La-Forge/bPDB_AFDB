@@ -5,6 +5,6 @@
 #include "bpdb_internal.h"
 
 void cif_write_afdb_metadata(FILE* out_f, const AfdbMetadata* meta, const ChainView* chain);
-void cif_write_atom_site(FILE* out_f, const ChainView* chain, const char* accession);
+void cif_write_atom_site(FILE* out_f, const AfdbMetadata* meta, const ChainView* chain);
 
 #endif // BPDB_CIF_WRITER_H

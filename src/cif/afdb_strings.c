@@ -1,27 +1,26 @@
 #include "cif/afdb_strings.h"
 
-// Kept in strict alphabetical order by the 3-letter code
 const ChemCompRow CHEM_COMP_ROWS[20] = {
-    {'A', "\"C3 H7 N O2\"    89.093  ALA y ALANINE         ? \"L-PEPTIDE LINKING\" "},
-    {'R', "\"C6 H15 N4 O2\"  175.209 ARG y ARGININE        ? \"L-PEPTIDE LINKING\" "},
-    {'N', "\"C4 H8 N2 O3\"   132.118 ASN y ASPARAGINE      ? \"L-PEPTIDE LINKING\" "},
-    {'D', "\"C4 H7 N O4\"    133.103 ASP y \"ASPARTIC ACID\" ? \"L-PEPTIDE LINKING\" "},
-    {'C', "\"C3 H7 N O2 S\"  121.158 CYS y CYSTEINE        ? \"L-PEPTIDE LINKING\" "},
-    {'Q', "\"C5 H10 N2 O3\"  146.144 GLN y GLUTAMINE       ? \"L-PEPTIDE LINKING\" "},
-    {'E', "\"C5 H9 N O4\"    147.129 GLU y \"GLUTAMIC ACID\" ? \"L-PEPTIDE LINKING\" "},
-    {'G', "\"C2 H5 N O2\"    75.067  GLY y GLYCINE         ? \"PEPTIDE LINKING\"   "},
-    {'H', "\"C6 H10 N3 O2\"  156.162 HIS y HISTIDINE       ? \"L-PEPTIDE LINKING\" "},
-    {'I', "\"C6 H13 N O2\"   131.173 ILE y ISOLEUCINE      ? \"L-PEPTIDE LINKING\" "},
-    {'L', "\"C6 H13 N O2\"   131.173 LEU y LEUCINE         ? \"L-PEPTIDE LINKING\" "},
-    {'K', "\"C6 H15 N2 O2\"  147.195 LYS y LYSINE          ? \"L-PEPTIDE LINKING\" "},
-    {'M', "\"C5 H11 N O2 S\" 149.211 MET y METHIONINE      ? \"L-PEPTIDE LINKING\" "},
-    {'F', "\"C9 H11 N O2\"   165.189 PHE y PHENYLALANINE   ? \"L-PEPTIDE LINKING\" "},
-    {'P', "\"C5 H9 N O2\"    115.130 PRO y PROLINE         ? \"L-PEPTIDE LINKING\" "},
-    {'S', "\"C3 H7 N O3\"    105.093 SER y SERINE          ? \"L-PEPTIDE LINKING\" "},
-    {'T', "\"C4 H9 N O3\"    119.119 THR y THREONINE       ? \"L-PEPTIDE LINKING\" "},
-    {'W', "\"C11 H12 N2 O2\" 204.225 TRP y TRYPTOPHAN      ? \"L-PEPTIDE LINKING\" "},
-    {'Y', "\"C9 H11 N O3\"   181.189 TYR y TYROSINE        ? \"L-PEPTIDE LINKING\" "},
-    {'V', "\"C5 H11 N O2\"   117.146 VAL y VALINE          ? \"L-PEPTIDE LINKING\" "}
+    {'A', "\"C3 H7 N O2\"",   "89.093",  "ALA", "ALANINE",           "\"L-PEPTIDE LINKING\""},
+    {'R', "\"C6 H15 N4 O2\"", "175.209", "ARG", "ARGININE",          "\"L-PEPTIDE LINKING\""},
+    {'N', "\"C4 H8 N2 O3\"",  "132.118", "ASN", "ASPARAGINE",        "\"L-PEPTIDE LINKING\""},
+    {'D', "\"C4 H7 N O4\"",   "133.103", "ASP", "\"ASPARTIC ACID\"", "\"L-PEPTIDE LINKING\""},
+    {'C', "\"C3 H7 N O2 S\"", "121.158", "CYS", "CYSTEINE",          "\"L-PEPTIDE LINKING\""},
+    {'Q', "\"C5 H10 N2 O3\"", "146.144", "GLN", "GLUTAMINE",         "\"L-PEPTIDE LINKING\""},
+    {'E', "\"C5 H9 N O4\"",   "147.129", "GLU", "\"GLUTAMIC ACID\"", "\"L-PEPTIDE LINKING\""},
+    {'G', "\"C2 H5 N O2\"",   "75.067",  "GLY", "GLYCINE",           "\"PEPTIDE LINKING\""},
+    {'H', "\"C6 H10 N3 O2\"", "156.162", "HIS", "HISTIDINE",         "\"L-PEPTIDE LINKING\""},
+    {'I', "\"C6 H13 N O2\"",  "131.173", "ILE", "ISOLEUCINE",        "\"L-PEPTIDE LINKING\""},
+    {'L', "\"C6 H13 N O2\"",  "131.173", "LEU", "LEUCINE",           "\"L-PEPTIDE LINKING\""},
+    {'K', "\"C6 H15 N2 O2\"", "147.195", "LYS", "LYSINE",            "\"L-PEPTIDE LINKING\""},
+    {'M', "\"C5 H11 N O2 S\"","149.211", "MET", "METHIONINE",        "\"L-PEPTIDE LINKING\""},
+    {'F', "\"C9 H11 N O2\"",  "165.189", "PHE", "PHENYLALANINE",     "\"L-PEPTIDE LINKING\""},
+    {'P', "\"C5 H9 N O2\"",   "115.130", "PRO", "PROLINE",           "\"L-PEPTIDE LINKING\""},
+    {'S', "\"C3 H7 N O3\"",   "105.093", "SER", "SERINE",            "\"L-PEPTIDE LINKING\""},
+    {'T', "\"C4 H9 N O3\"",   "119.119", "THR", "THREONINE",         "\"L-PEPTIDE LINKING\""},
+    {'W', "\"C11 H12 N2 O2\"","204.225", "TRP", "TRYPTOPHAN",        "\"L-PEPTIDE LINKING\""},
+    {'Y', "\"C9 H11 N O3\"",  "181.189", "TYR", "TYROSINE",          "\"L-PEPTIDE LINKING\""},
+    {'V', "\"C5 H11 N O2\"",  "117.146", "VAL", "VALINE",            "\"L-PEPTIDE LINKING\""}
 };
 
 const size_t NUM_CHEM_COMP_ROWS = sizeof(CHEM_COMP_ROWS) / sizeof(CHEM_COMP_ROWS[0]);

@@ -6,7 +6,11 @@
 
 typedef struct {
     char        code;
-    const char* str;
+    const char* formula;
+    const char* weight;
+    const char* id;
+    const char* name;
+    const char* type;
 } ChemCompRow;
 
 extern const ChemCompRow CHEM_COMP_ROWS[20];
@@ -43,13 +47,13 @@ extern const size_t      NUM_CHEM_COMP_ROWS;
     "#\n"
 
 #define AFDB_STRUCT_REF_FORMAT \
-    "_struct_ref.db_code                  %.12s\n" \
-    "_struct_ref.db_name                  %.8s\n" \
+    "_struct_ref.db_code                  %s\n" \
+    "_struct_ref.db_name                  %s\n" \
     "_struct_ref.entity_id                1\n" \
     "_struct_ref.id                       1\n" \
     "_struct_ref.pdbx_align_begin         %d\n" \
     "_struct_ref.pdbx_align_end           %d\n" \
-    "_struct_ref.pdbx_db_accession        %.12s\n" \
+    "_struct_ref.pdbx_db_accession        %s\n" \
     "_struct_ref.pdbx_db_isoform          %s\n" \
     "_struct_ref.pdbx_seq_one_letter_code "
 
@@ -60,7 +64,7 @@ extern const size_t      NUM_CHEM_COMP_ROWS;
     "_struct_ref_seq.pdbx_PDB_id_code            AF-%s-F%d\n" \
     "_struct_ref_seq.pdbx_auth_seq_align_beg     %d\n" \
     "_struct_ref_seq.pdbx_auth_seq_align_end     %d\n" \
-    "_struct_ref_seq.pdbx_db_accession           %.12s\n" \
+    "_struct_ref_seq.pdbx_db_accession           %s\n" \
     "_struct_ref_seq.pdbx_db_align_beg_ins_code  ?\n" \
     "_struct_ref_seq.pdbx_db_align_end_ins_code  ?\n" \
     "_struct_ref_seq.pdbx_seq_align_beg_ins_code ?\n" \

@@ -7,10 +7,21 @@ void afdb_meta_free(AfdbMetadata* meta) {
     if (!meta) return;
     free(meta->entity_desc);
     free(meta->confs);
-    free(meta->templates);
-    free(meta->gene);
-    free(meta->organism);
-    free(meta->isoform);
+    if (meta->templates) {
+        for (size_t i = 0; i < meta->template_count; i++) {
+            free(meta->templates[i].accession);
+            free(meta->templates[i].db_name);
+            free(meta->templates[i].asym_id);
+        }
+        free(meta->templates);
+    }
+    free(meta->dbref.db_name);
+    free(meta->dbref.db_accession);
+    free(meta->dbref.db_id_code);
+    free(meta->dbref.version_date);
+    free(meta->dbref.gene);
+    free(meta->dbref.organism);
+    free(meta->dbref.isoform);
     if (meta->revisions) {
         for (uint32_t i = 0; i < meta->revision_count; i++) {
             free(meta->revisions[i].description);
@@ -21,27 +32,220 @@ void afdb_meta_free(AfdbMetadata* meta) {
     memset(meta, 0, sizeof(*meta));
 }
 
+static size_t tlv_varstr_size(const char* s) {
+    if (!s || s[0] == '\0') return 0;
+    size_t len = strlen(s);
+    if (len > 65535) len = 65535;
+    return 1 + bw_varlen_size(len) + len;
+}
+
+static void write_tlv_varstr(ByteWriter* w, uint8_t tag, const char* s) {
+    if (!s || s[0] == '\0') return;
+    size_t len = strlen(s);
+    if (len > 65535) len = 65535;
+    bw_write_u8(w, tag);
+    bw_write_varlen(w, len);
+    bw_write(w, s, len);
+}
+
+static bool has_nondefault_icodes(const DbRefEntry* ref) {
+    return (ref->iCode_begin && ref->iCode_begin != '?') ||
+           (ref->iCode_end && ref->iCode_end != '?') ||
+           (ref->db_iCode_begin && ref->db_iCode_begin != '?') ||
+           (ref->db_iCode_end && ref->db_iCode_end != '?');
+}
+
+static size_t dbref_tlv_payload_bytes(const DbRefEntry* ref) {
+    size_t bytes = 1; // DBREF_TAG_END
+    bytes += tlv_varstr_size(ref->db_name);
+    bytes += tlv_varstr_size(ref->db_accession);
+    bytes += tlv_varstr_size(ref->db_id_code);
+    bytes += 2 + 8; // DBREF_TAG_DB_ALIGN
+    if (ref->seq_begin != 0 || ref->seq_end != 0) bytes += 2 + 8;
+    if (ref->chain && ref->chain != 'A')          bytes += 2 + 1;
+    if (has_nondefault_icodes(ref))               bytes += 2 + 4;
+    if (ref->checksum != 0)                       bytes += 2 + 8;
+    if (ref->ncbi_tax_id != 0)                    bytes += 2 + 4;
+    bytes += tlv_varstr_size(ref->version_date);
+    bytes += tlv_varstr_size(ref->gene);
+    bytes += tlv_varstr_size(ref->organism);
+    bytes += tlv_varstr_size(ref->isoform);
+    return bytes;
+}
+
+static void write_dbref_tlv(ByteWriter* w, const DbRefEntry* ref) {
+    uint32_t payload_bytes = (uint32_t)dbref_tlv_payload_bytes(ref);
+    bw_write(w, &payload_bytes, 4);
+
+    write_tlv_varstr(w, DBREF_TAG_DB_NAME,   ref->db_name);
+    write_tlv_varstr(w, DBREF_TAG_ACCESSION, ref->db_accession);
+    write_tlv_varstr(w, DBREF_TAG_ID_CODE,   ref->db_id_code);
+
+    bw_write_u8(w, DBREF_TAG_DB_ALIGN);
+    bw_write_u8(w, 8);
+    bw_write(w, &ref->db_seq_begin, 4);
+    bw_write(w, &ref->db_seq_end, 4);
+
+    if (ref->seq_begin != 0 || ref->seq_end != 0) {
+        bw_write_u8(w, DBREF_TAG_SEQ_ALIGN);
+        bw_write_u8(w, 8);
+        bw_write(w, &ref->seq_begin, 4);
+        bw_write(w, &ref->seq_end, 4);
+    }
+    if (ref->chain && ref->chain != 'A') {
+        bw_write_u8(w, DBREF_TAG_CHAIN);
+        bw_write_u8(w, 1);
+        bw_write_u8(w, (uint8_t)ref->chain);
+    }
+    if (has_nondefault_icodes(ref)) {
+        char ic[4] = { ref->iCode_begin, ref->iCode_end, ref->db_iCode_begin, ref->db_iCode_end };
+        bw_write_u8(w, DBREF_TAG_ICODES);
+        bw_write_u8(w, 4);
+        bw_write(w, ic, 4);
+    }
+    if (ref->checksum != 0) {
+        bw_write_u8(w, DBREF_TAG_CHECKSUM);
+        bw_write_u8(w, 8);
+        bw_write(w, &ref->checksum, 8);
+    }
+    if (ref->ncbi_tax_id != 0) {
+        bw_write_u8(w, DBREF_TAG_TAX_ID);
+        bw_write_u8(w, 4);
+        bw_write(w, &ref->ncbi_tax_id, 4);
+    }
+
+    write_tlv_varstr(w, DBREF_TAG_VERSION_DATE, ref->version_date);
+    write_tlv_varstr(w, DBREF_TAG_GENE,         ref->gene);
+    write_tlv_varstr(w, DBREF_TAG_ORGANISM,     ref->organism);
+    write_tlv_varstr(w, DBREF_TAG_ISOFORM,      ref->isoform);
+    bw_write_u8(w, DBREF_TAG_END);
+}
+
+static bool read_dbref_tlv(ByteReader* r, AfdbMetadata* out_meta) {
+    uint32_t payload_bytes = 0;
+    if (!br_read(r, &payload_bytes, 4)) return false;
+    if (payload_bytes == 0 || payload_bytes > br_remaining(r)) {
+        r->error = true;
+        return false;
+    }
+
+    ByteReader sub = br_init(r->ptr, payload_bytes);
+    r->ptr += payload_bytes;
+
+    DbRefEntry* ref = &out_meta->dbref;
+    ref->chain          = 'A';
+    ref->iCode_begin    = '?';
+    ref->iCode_end      = '?';
+    ref->db_iCode_begin = '?';
+    ref->db_iCode_end   = '?';
+
+    while (true) {
+        uint8_t tag = 0;
+        if (!br_read(&sub, &tag, 1)) { r->error = true; return false; }
+        if (tag == DBREF_TAG_END) break;
+
+        size_t len = 0;
+        if (!br_read_varlen(&sub, &len)) { r->error = true; return false; }
+
+        switch (tag) {
+            case DBREF_TAG_DB_NAME:
+                free(ref->db_name);
+                ref->db_name = br_read_str(&sub, len, false);
+                break;
+            case DBREF_TAG_ACCESSION:
+                free(ref->db_accession);
+                ref->db_accession = br_read_str(&sub, len, false);
+                break;
+            case DBREF_TAG_ID_CODE:
+                free(ref->db_id_code);
+                ref->db_id_code = br_read_str(&sub, len, false);
+                break;
+            case DBREF_TAG_DB_ALIGN:
+                if (len != 8 || !br_read(&sub, &ref->db_seq_begin, 4) || !br_read(&sub, &ref->db_seq_end, 4)) {
+                    r->error = true; return false;
+                }
+                break;
+            case DBREF_TAG_SEQ_ALIGN:
+                if (len != 8 || !br_read(&sub, &ref->seq_begin, 4) || !br_read(&sub, &ref->seq_end, 4)) {
+                    r->error = true; return false;
+                }
+                break;
+            case DBREF_TAG_CHAIN:
+                if (len != 1 || !br_read(&sub, &ref->chain, 1)) { r->error = true; return false; }
+                break;
+            case DBREF_TAG_ICODES: {
+                char ic[4];
+                if (len != 4 || !br_read(&sub, ic, 4)) { r->error = true; return false; }
+                ref->iCode_begin    = ic[0];
+                ref->iCode_end      = ic[1];
+                ref->db_iCode_begin = ic[2];
+                ref->db_iCode_end   = ic[3];
+                break;
+            }
+            case DBREF_TAG_CHECKSUM:
+                if (len != 8 || !br_read(&sub, &ref->checksum, 8)) { r->error = true; return false; }
+                break;
+            case DBREF_TAG_TAX_ID:
+                if (len != 4 || !br_read(&sub, &ref->ncbi_tax_id, 4)) { r->error = true; return false; }
+                break;
+            case DBREF_TAG_VERSION_DATE:
+                free(ref->version_date);
+                ref->version_date = br_read_str(&sub, len, false);
+                break;
+            case DBREF_TAG_GENE:
+                free(ref->gene);
+                ref->gene = br_read_str(&sub, len, false);
+                break;
+            case DBREF_TAG_ORGANISM:
+                free(ref->organism);
+                ref->organism = br_read_str(&sub, len, false);
+                break;
+            case DBREF_TAG_ISOFORM:
+                free(ref->isoform);
+                ref->isoform = br_read_str(&sub, len, false);
+                break;
+            default:
+                if (len > br_remaining(&sub)) { r->error = true; return false; }
+                sub.ptr += len;
+                break;
+        }
+        if (sub.error) { r->error = true; return false; }
+    }
+    return true;
+}
+
+static uint8_t clamp_tlv_len(const char* s) {
+    if (!s) return 0;
+    size_t len = strlen(s);
+    return (len > 255) ? 255 : (uint8_t)len;
+}
+
+static size_t templates_tlv_payload_bytes(const AfdbMetadata* meta) {
+    size_t bytes = 4; // uint32_t template_count
+    for (size_t i = 0; i < meta->template_count; i++) {
+        const TemplateEntry* t = &meta->templates[i];
+        bytes += 4; // TPL_TAG_ID (1) + len (1) + uint16_t (2)
+        uint8_t acc_len  = clamp_tlv_len(t->accession);
+        uint8_t db_len   = clamp_tlv_len(t->db_name);
+        uint8_t asym_len = clamp_tlv_len(t->asym_id);
+        if (acc_len > 0)  bytes += 2 + acc_len;
+        if (db_len > 0)   bytes += 2 + db_len;
+        if (asym_len > 0) bytes += 2 + asym_len;
+        bytes += 1; // TPL_TAG_END
+    }
+    return bytes;
+}
+
 size_t meta_encoded_size(const AfdbMetadata* meta) {
     size_t size = 64 + 8; // 64-byte global header + 8-byte bitmask
 
-    if (meta->flags & FLAG_RESOLUTION) {
-        size += 4;
-    }
-    if (meta->flags & FLAG_ENTITY) {
-        size += 4 + (meta->entity_desc ? strlen(meta->entity_desc) : 0);
-    }
-    if (meta->flags & FLAG_STRUCT) {
-        size += 8 + (meta->conf_count * sizeof(MetaStructConf));
-    }
-    if (meta->flags & FLAG_TEMPLATES) {
-        size += 8 + (meta->template_count * sizeof(MetaTemplate));
-    }
-    if (meta->flags & FLAG_DBREF) {
-        size += sizeof(MetaDBRef) + sizeof(AFDBTargetExt)
-              + meta->target_ext.gene_len
-              + meta->target_ext.org_len
-              + meta->target_ext.isoform_len;
-    }
+    if (meta->flags & FLAG_RESOLUTION) size += 4;
+    if (meta->flags & FLAG_ENTITY)     size += 4 + (meta->entity_desc ? strlen(meta->entity_desc) : 0);
+    if (meta->flags & FLAG_STRUCT)     size += 8 + (meta->conf_count * sizeof(MetaStructConf));
+    if (meta->flags & FLAG_TEMPLATES)  size += 4 + templates_tlv_payload_bytes(meta);
+
+    if (meta->flags & FLAG_DBREF) size += 4 + dbref_tlv_payload_bytes(&meta->dbref);
+    
     if (meta->flags & FLAG_AUDIT) {
         size += 4;
         for (uint32_t i = 0; i < meta->revision_count; i++) {
@@ -61,15 +265,40 @@ static void write_global_header(ByteWriter* w, const AfdbMetadata* meta) {
     hdr[5] = 1;
     hdr[6] = 1;
     hdr[7] = 0;
-
     memcpy(hdr + 8, meta->accession, 12);
 
     uint16_t tot_mod = 0;
     uint16_t cur_mod = (meta->frag_num > 0) ? (uint16_t)(meta->frag_num - 1) : 0;
     memcpy(hdr + 20, &tot_mod, 2);
     memcpy(hdr + 22, &cur_mod, 2);
-
     bw_write(w, hdr, sizeof(hdr));
+}
+
+static void write_tlv_str(ByteWriter* w, uint8_t tag, const char* s) {
+    uint8_t len = clamp_tlv_len(s);
+    if (len == 0) return;
+    bw_write_u8(w, tag);
+    bw_write_u8(w, len);
+    bw_write(w, s, len);
+}
+
+static void write_templates_tlv(ByteWriter* w, const AfdbMetadata* meta) {
+    uint32_t payload_bytes = (uint32_t)templates_tlv_payload_bytes(meta);
+    uint32_t count         = (uint32_t)meta->template_count;
+    bw_write(w, &payload_bytes, 4);
+    bw_write(w, &count, 4);
+
+    for (size_t i = 0; i < meta->template_count; i++) {
+        const TemplateEntry* t = &meta->templates[i];
+        bw_write_u8(w, TPL_TAG_ID);
+        bw_write_u8(w, 2);
+        bw_write(w, &t->template_id, 2);
+
+        write_tlv_str(w, TPL_TAG_ACCESSION, t->accession);
+        write_tlv_str(w, TPL_TAG_DB_NAME,   t->db_name);
+        write_tlv_str(w, TPL_TAG_ASYM_ID,   t->asym_id);
+        bw_write_u8(w, TPL_TAG_END);
+    }
 }
 
 void meta_write_binary(ByteWriter* w, const AfdbMetadata* meta) {
@@ -79,33 +308,21 @@ void meta_write_binary(ByteWriter* w, const AfdbMetadata* meta) {
     if (meta->flags & FLAG_RESOLUTION) {
         bw_write(w, &meta->global_plddt, 4);
     }
-
     if (meta->flags & FLAG_ENTITY) {
         uint32_t dlen = meta->entity_desc ? (uint32_t)strlen(meta->entity_desc) : 0;
         bw_write(w, &dlen, 4);
         if (dlen > 0) bw_write(w, meta->entity_desc, dlen);
     }
-
     if (meta->flags & FLAG_STRUCT) {
         uint64_t count = (uint64_t)meta->conf_count;
         bw_write(w, &count, 8);
         bw_write(w, meta->confs, meta->conf_count * sizeof(MetaStructConf));
     }
-
     if (meta->flags & FLAG_TEMPLATES) {
-        uint64_t count = (uint64_t)meta->template_count;
-        bw_write(w, &count, 8);
-        bw_write(w, meta->templates, meta->template_count * sizeof(MetaTemplate));
+        write_templates_tlv(w, meta);
     }
-
-    if (meta->flags & FLAG_DBREF) {
-        bw_write(w, &meta->dbref, sizeof(MetaDBRef));
-        bw_write(w, &meta->target_ext, sizeof(AFDBTargetExt));
-        if (meta->target_ext.gene_len > 0)    bw_write(w, meta->gene, meta->target_ext.gene_len);
-        if (meta->target_ext.org_len > 0)     bw_write(w, meta->organism, meta->target_ext.org_len);
-        if (meta->target_ext.isoform_len > 0) bw_write(w, meta->isoform, meta->target_ext.isoform_len);
-    }
-
+    if (meta->flags & FLAG_DBREF) write_dbref_tlv(w, &meta->dbref);
+    
     if (meta->flags & FLAG_AUDIT) {
         bw_write(w, &meta->revision_count, 4);
         for (uint32_t i = 0; i < meta->revision_count; i++) {
@@ -122,7 +339,6 @@ void meta_write_binary(ByteWriter* w, const AfdbMetadata* meta) {
 static bool read_global_header(ByteReader* r, AfdbMetadata* out_meta) {
     uint8_t hdr[64];
     if (!br_read(r, hdr, sizeof(hdr))) return false;
-
     memcpy(out_meta->accession, hdr + 8, 12);
     out_meta->accession[12] = '\0';
 
@@ -132,20 +348,60 @@ static bool read_global_header(ByteReader* r, AfdbMetadata* out_meta) {
     return true;
 }
 
-static bool read_dbref_block(ByteReader* r, AfdbMetadata* out_meta) {
-    if (!br_read(r, &out_meta->dbref, sizeof(MetaDBRef))) return false;
-    if (!br_read(r, &out_meta->target_ext, sizeof(AFDBTargetExt))) return false;
+static bool read_templates_tlv(ByteReader* r, AfdbMetadata* out_meta) {
+    uint32_t payload_bytes = 0;
+    if (!br_read(r, &payload_bytes, 4)) return false;
+    if (payload_bytes < 4 || payload_bytes > br_remaining(r)) {
+        r->error = true;
+        return false;
+    }
 
-    if (out_meta->target_ext.gene_len > 0) {
-        out_meta->gene = br_read_str(r, out_meta->target_ext.gene_len, false);
+    ByteReader sub = br_init(r->ptr, payload_bytes);
+    r->ptr += payload_bytes;
+
+    uint32_t count = 0;
+    if (!br_read(&sub, &count, 4)) { r->error = true; return false; }
+
+    out_meta->templates = calloc(count, sizeof(TemplateEntry));
+    if (!out_meta->templates && count > 0) { r->error = true; return false; }
+    out_meta->template_count = count;
+
+    for (uint32_t i = 0; i < count; i++) {
+        TemplateEntry* t = &out_meta->templates[i];
+        while (true) {
+            uint8_t tag = 0;
+            if (!br_read(&sub, &tag, 1)) { r->error = true; return false; }
+            if (tag == TPL_TAG_END) break;
+
+            uint8_t len = 0;
+            if (!br_read(&sub, &len, 1)) { r->error = true; return false; }
+
+            switch (tag) {
+                case TPL_TAG_ID:
+                    if (len != 2 || !br_read(&sub, &t->template_id, 2)) { r->error = true; return false; }
+                    break;
+                case TPL_TAG_ACCESSION:
+                    free(t->accession);
+                    t->accession = br_read_str(&sub, len, false);
+                    break;
+                case TPL_TAG_DB_NAME:
+                    free(t->db_name);
+                    t->db_name = br_read_str(&sub, len, false);
+                    break;
+                case TPL_TAG_ASYM_ID:
+                    free(t->asym_id);
+                    t->asym_id = br_read_str(&sub, len, false);
+                    break;
+                default:
+                    // Forward-compatible skip of unknown TLV fields
+                    if (len > br_remaining(&sub)) { r->error = true; return false; }
+                    sub.ptr += len;
+                    break;
+            }
+            if (sub.error) { r->error = true; return false; }
+        }
     }
-    if (out_meta->target_ext.org_len > 0) {
-        out_meta->organism = br_read_str(r, out_meta->target_ext.org_len, false);
-    }
-    if (out_meta->target_ext.isoform_len > 0) {
-        out_meta->isoform = br_read_str(r, out_meta->target_ext.isoform_len, false);
-    }
-    return !r->error;
+    return true;
 }
 
 static bool read_audit_block(ByteReader* r, AfdbMetadata* out_meta) {
@@ -201,18 +457,11 @@ bool meta_read_binary(ByteReader* r, AfdbMetadata* out_meta) {
     }
 
     if (out_meta->flags & FLAG_TEMPLATES) {
-        uint64_t count = 0;
-        if (!br_read(r, &count, 8)) return false;
-        size_t bytes = (size_t)count * sizeof(MetaTemplate);
-        if (bytes > br_remaining(r)) return false;
-        out_meta->templates = malloc(bytes);
-        if (!out_meta->templates && bytes > 0) return false;
-        if (!br_read(r, out_meta->templates, bytes)) return false;
-        out_meta->template_count = (size_t)count;
+        if (!read_templates_tlv(r, out_meta)) return false;
     }
 
     if (out_meta->flags & FLAG_DBREF) {
-        if (!read_dbref_block(r, out_meta)) return false;
+        if (!read_dbref_tlv(r, out_meta)) return false;
     }
 
     if (out_meta->flags & FLAG_AUDIT) {
